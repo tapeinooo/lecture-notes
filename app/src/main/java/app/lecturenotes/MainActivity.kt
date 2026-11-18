@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package app.lecturenotes
 
 import android.Manifest
@@ -21,6 +23,15 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -275,8 +286,8 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
     }
 
     var menu by remember { mutableStateOf(false) }
-    var selected by remember { mutableStateOf<Segment?>(null) }
-    var markTime by remember { mutableStateOf<Long?>(null) }
+    var editing by remember { mutableStateOf<Int?>(null) }
+    var noteFor by remember { mutableStateOf<Long?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf<String?>(null) }
@@ -293,7 +304,7 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
         }
     }
     LaunchedEffect(rows.size, live.partial, live.liveText) {
-        if (isRec && atBottom && listState.layoutInfo.totalItemsCount > 0) {
+        if (isRec && atBottom && editing == null && listState.layoutInfo.totalItemsCount > 0) {
             listState.scrollToItem(listState.layoutInfo.totalItemsCount - 1)
         }
     }
@@ -343,7 +354,17 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
 
         LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp), state = listState) {
             items(rows) { para ->
-                ParaView(para, onEdit = { selected = it }, onMark = { Marker.toggleWhole(id, it.index) })
+                ParaView(
+                    para, editing,
+                    onEdit = { editing = it.index },
+                    onMark = { Marker.toggleWhole(id, it.index) },
+                ) { g ->
+                    InlineEditor(
+                        s, g,
+                        onClose = { editing = null },
+                        onLearned = { fixes -> learned = g.index to fixes },
+                    )
+                }
             }
             if (isRec) {
                 item { LiveBlock(live, now) }
@@ -363,6 +384,15 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
                 maxLines = 2,
             )
             busy?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
+            learned?.let { (segIndex, fixes) ->
+                LearnedBar(s, segIndex, fixes) { learned = null }
+            }
+            noteFor?.let { t ->
+                NoteBar(t, onSave = { note ->
+                    Repo.update(id) { ss -> ss.copy(marks = ss.marks.map { if (it.timeMs == t) it.copy(note = note) else it }) }
+                    noteFor = null
+                }, onClose = { noteFor = null })
+            }
             if (isRec) {
                 live.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -375,7 +405,11 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
-                        onClick = { markTime = live.elapsedMs() },
+                        onClick = {
+                            val t = live.elapsedMs()
+                            Repo.update(id) { it.copy(marks = it.marks + Mark(t, "")) }
+                            noteFor = t
+                        },
                         modifier = Modifier.weight(1f).height(56.dp),
                     ) { Text("★ 印を付ける") }
                     Button(
@@ -394,147 +428,6 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
                 if (otherRec) Text("ほかの記録を録音中です", style = MaterialTheme.typography.labelSmall)
             }
         }
-    }
-
-    markTime?.let { t ->
-        var note by remember { mutableStateOf("") }
-        AlertDialog(
-            onDismissRequest = { markTime = null },
-            title = { Text("★ ${fmtClock(t)} に印") },
-            text = { OutlinedTextField(value = note, onValueChange = { note = it }, label = { Text("メモ（なくてもよい）") }) },
-            confirmButton = {
-                Button(onClick = {
-                    Repo.update(id) { it.copy(marks = it.marks + Mark(t, note.trim())) }
-                    markTime = null
-                }) { Text("付ける") }
-            },
-            dismissButton = { TextButton(onClick = { markTime = null }) { Text("やめる") } },
-        )
-    }
-
-    selected?.let { g0 ->
-        val g = s.segments.firstOrNull { it.index == g0.index } ?: g0
-        val before = displayText(g) ?: ""
-        var field by remember(g.index) { mutableStateOf(TextFieldValue(before)) }
-        val edit = field.text
-        val pos = s.segments.indexOfFirst { it.index == g.index }
-        val prev = s.segments.getOrNull(pos - 1)?.let { displayText(it) }?.takeLast(60)
-        val next = s.segments.getOrNull(pos + 1)?.let { displayText(it) }?.take(60)
-        AlertDialog(
-            onDismissRequest = { selected = null },
-            title = { Text("直す（${fmtClock(g.startMs)}〜${fmtClock(g.endMs)}）") },
-            text = {
-                Column(Modifier.verticalScroll(rememberScrollState())) {
-                    if (!prev.isNullOrBlank()) Text("…$prev", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
-                    OutlinedTextField(
-                        value = field, onValueChange = { field = it },
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                    )
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        val sel = field.selection
-                        OutlinedButton(
-                            onClick = {
-                                Marker.add(id, g.index, edit.substring(sel.min, sel.max))
-                                field = field.copy(selection = androidx.compose.ui.text.TextRange(sel.max))
-                            },
-                            enabled = !sel.collapsed,
-                        ) { Text("🖍 選んだところにマーカー") }
-                        Spacer(Modifier.width(8.dp))
-                        TextButton(onClick = { Marker.toggleWhole(id, g.index) }) {
-                            Text(if (Marker.WHOLE in g.highlights) "全体のマーカーを消す" else "全体にマーカー")
-                        }
-                    }
-                    g.highlights.filter { it != Marker.WHOLE }.forEach { h ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("🖍 $h", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                            TextButton(onClick = { Marker.remove(id, g.index, h) }) { Text("消す") }
-                        }
-                    }
-                    if (!next.isNullOrBlank()) Text("$next…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
-                    Text(
-                        "文字を選んで「マーカー」を押すと線を引けます（文章を長押しすると、その部分全体に引けます）。空行を入れると、そこで段落が分かれます。直したところは AI が上書きせず、直し方を覚えてこの先の文字起こし・整形に使います。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.outline,
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text("文字起こし（${engineLabel(g.rawEngine, g.rawModel)}）", style = MaterialTheme.typography.labelMedium)
-                    Text(g.raw ?: "（まだ）", style = MaterialTheme.typography.bodySmall)
-                    g.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-                    if (g.edited != null) {
-                        TextButton(onClick = {
-                            Repo.updateSegment(id, g.index) { it.copy(edited = null) }
-                            Processor.wake()
-                            selected = null
-                        }) { Text("自分の直しをやめて AI の文に戻す") }
-                    }
-                    TextButton(onClick = {
-                        Repo.updateSegment(id, g.index) { it.copy(raw = null, rawEngine = null, formatted = null, polished = false, edited = null, error = null, silent = false) }
-                        Processor.wake()
-                        selected = null
-                    }) { Text("文字起こしからやり直す") }
-                    TextButton(onClick = {
-                        Repo.updateSegment(id, g.index) { it.copy(formatted = null, polished = false, edited = null) }
-                        Processor.wake()
-                        selected = null
-                    }) { Text("整形だけやり直す") }
-                }
-            },
-            confirmButton = {
-                Button(onClick = {
-                    if (edit != before) {
-                        val fixes = Corrections.extract(before, edit)
-                        Repo.updateSegment(id, g.index) { it.copy(edited = edit) }
-                        if (fixes.isNotEmpty()) {
-                            Repo.update(id) { ss -> ss.copy(corrections = (ss.corrections + fixes.map { it.toString() }).distinct()) }
-                            learned = g.index to fixes
-                        }
-                        Processor.wake()
-                    }
-                    selected = null
-                }) { Text("保存") }
-            },
-            dismissButton = { TextButton(onClick = { selected = null }) { Text("閉じる") } },
-        )
-    }
-
-    learned?.let { (segIndex, fixes) ->
-        val others = remember(fixes) { Corrections.countOthers(s, segIndex, fixes) }
-        var toGlossary by remember(fixes) { mutableStateOf(true) }
-        var toOthers by remember(fixes) { mutableStateOf(others > 0) }
-        AlertDialog(
-            onDismissRequest = { learned = null },
-            title = { Text("直し方を覚えました") },
-            text = {
-                Column {
-                    fixes.forEach { Text("・${it.from} → ${it.to}") }
-                    Text(
-                        "この記録のこの先の文字起こし・整形で、このとおりに直すよう AI に伝えます。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.outline,
-                        modifier = Modifier.padding(vertical = 4.dp),
-                    )
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Switch(checked = toGlossary, onCheckedChange = { toGlossary = it })
-                        Text("用語集にも足す（ほかの記録でも使う）", Modifier.padding(start = 8.dp))
-                    }
-                    if (others > 0) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Switch(checked = toOthers, onCheckedChange = { toOthers = it })
-                            Text("すでにある同じ誤り（${others}か所）も直す", Modifier.padding(start = 8.dp))
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                Button(onClick = {
-                    if (toGlossary) Glossary.append(context, fixes.map { it.toString() }, "直したところから")
-                    if (toOthers) Corrections.applyToOthers(id, segIndex, fixes)
-                    learned = null
-                }) { Text("OK") }
-            },
-            dismissButton = { TextButton(onClick = { learned = null }) { Text("この記録だけ") } },
-        )
     }
 
     if (renaming) {
@@ -598,17 +491,50 @@ private fun LiveBlock(live: Live.State, now: Long) {
 
 private val MARKER_COLOR = androidx.compose.ui.graphics.Color(0x80FFE14D)
 
-/** 1つの段落。押したところの区間を直せる。長押しでマーカー。聖句の参照を押すと wol.jw.org を開く */
+/** 1つの段落。押したところの区間をその場で直せる。長押しでマーカー。聖句の参照を押すと wol.jw.org を開く */
 @Composable
-private fun ParaView(para: Transcript.Para, onEdit: (Segment) -> Unit, onMark: (Segment) -> Unit) {
+private fun ParaView(
+    para: Transcript.Para,
+    editingIndex: Int?,
+    onEdit: (Segment) -> Unit,
+    onMark: (Segment) -> Unit,
+    editor: @Composable (Segment) -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        Text(fmtClock(para.startMs), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+        // 直している区間のところで文を分け、その区間だけ入力欄にする
+        val groups = ArrayList<Any>() // List<Piece> か Segment（入力欄）
+        var run = ArrayList<Transcript.Piece>()
+        for (p in para.pieces) {
+            val g = p.seg
+            if (g != null && g.index == editingIndex) {
+                val dt = displayText(g)
+                val first = dt.isNullOrBlank() || dt.trimStart().startsWith(p.text.trimStart())
+                if (run.isNotEmpty()) { groups.add(run); run = ArrayList() }
+                if (first) groups.add(g)
+            } else run.add(p)
+        }
+        if (run.isNotEmpty()) groups.add(run)
+        for (gr in groups) {
+            if (gr is Segment) editor(gr)
+            else {
+                @Suppress("UNCHECKED_CAST")
+                PiecesText(gr as List<Transcript.Piece>, onEdit, onMark)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment) -> Unit, onMark: (Segment) -> Unit) {
     val haptic = LocalHapticFeedback.current
     val uri = LocalUriHandler.current
     val cs = MaterialTheme.colorScheme
-    val built = remember(para, cs) {
+    val built = remember(pieces, cs) {
         val segRanges = ArrayList<Triple<Int, Int, Segment>>()
         val urlRanges = ArrayList<Triple<Int, Int, String>>()
         val text = buildAnnotatedString {
-            for (p in para.pieces) {
+            for (p in pieces) {
                 val start = length
                 val style = when (p.kind) {
                     Transcript.Kind.FINAL -> SpanStyle(color = cs.onSurface)
@@ -643,32 +569,171 @@ private fun ParaView(para: Transcript.Para, onEdit: (Segment) -> Unit, onMark: (
         Triple(text, segRanges, urlRanges)
     }
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
-    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-        Text(fmtClock(para.startMs), style = MaterialTheme.typography.labelSmall, color = cs.outline)
-        Text(
-            built.first,
-            style = MaterialTheme.typography.bodyLarge,
-            onTextLayout = { layout = it },
-            modifier = Modifier.pointerInput(built) {
-                fun segAt(pos: androidx.compose.ui.geometry.Offset): Segment? {
-                    val off = layout?.getOffsetForPosition(pos) ?: return null
-                    return (built.second.firstOrNull { off in it.first until it.second } ?: built.second.lastOrNull { it.first <= off })?.third
-                }
-                detectTapGestures(
-                    onLongPress = { pos ->
-                        segAt(pos)?.let {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onMark(it)
-                        }
-                    },
-                    onTap = { pos ->
-                        val off = layout?.getOffsetForPosition(pos)
-                        val url = off?.let { o -> built.third.firstOrNull { o in it.first until it.second } }
-                        if (url != null) uri.openUri(url.third) else segAt(pos)?.let { onEdit(it) }
-                    },
-                )
-            },
+    Text(
+        built.first,
+        style = MaterialTheme.typography.bodyLarge,
+        onTextLayout = { layout = it },
+        modifier = Modifier.fillMaxWidth().pointerInput(built) {
+            fun segAt(pos: androidx.compose.ui.geometry.Offset): Segment? {
+                val off = layout?.getOffsetForPosition(pos) ?: return null
+                return (built.second.firstOrNull { off in it.first until it.second } ?: built.second.lastOrNull { it.first <= off })?.third
+            }
+            detectTapGestures(
+                onLongPress = { pos ->
+                    segAt(pos)?.let {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onMark(it)
+                    }
+                },
+                onTap = { pos ->
+                    val off = layout?.getOffsetForPosition(pos)
+                    val url = off?.let { o -> built.third.firstOrNull { o in it.first until it.second } }
+                    if (url != null) uri.openUri(url.third) else segAt(pos)?.let { onEdit(it) }
+                },
+            )
+        },
+    )
+}
+
+/** 文章の中でそのまま直す入力欄 */
+@Composable
+private fun InlineEditor(s: Session, g: Segment, onClose: () -> Unit, onLearned: (List<Corrections.Fix>) -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val before = remember(g.index) { displayText(g) ?: "" }
+    var field by remember(g.index) { mutableStateOf(TextFieldValue(before, androidx.compose.ui.text.TextRange(before.length))) }
+    var more by remember { mutableStateOf(false) }
+    var showRaw by remember { mutableStateOf(false) }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(g.index) { runCatching { focus.requestFocus() } }
+
+    fun save() {
+        val edit = field.text
+        if (edit != before) {
+            val fixes = Corrections.extract(before, edit)
+            Repo.updateSegment(s.id, g.index) { it.copy(edited = edit) }
+            if (fixes.isNotEmpty()) {
+                Repo.update(s.id) { ss -> ss.copy(corrections = (ss.corrections + fixes.map { it.toString() }).distinct()) }
+                onLearned(fixes)
+            }
+            Processor.wake()
+        }
+        onClose()
+    }
+
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = 2.dp)
+            .background(cs.secondaryContainer.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+            .padding(8.dp),
+    ) {
+        BasicTextField(
+            value = field,
+            onValueChange = { field = it },
+            textStyle = MaterialTheme.typography.bodyLarge.copy(color = cs.onSurface),
+            cursorBrush = SolidColor(cs.primary),
+            modifier = Modifier.fillMaxWidth().focusRequester(focus),
         )
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            val sel = field.selection
+            SmallBtn("確定", primary = true) { save() }
+            SmallBtn("やめる") { onClose() }
+            SmallBtn("🖍 選んだ所", enabled = !sel.collapsed) {
+                Marker.add(s.id, g.index, field.text.substring(sel.min, sel.max))
+                field = field.copy(selection = androidx.compose.ui.text.TextRange(sel.max))
+            }
+            SmallBtn(if (Marker.WHOLE in g.highlights) "🖍 全体を消す" else "🖍 全体") { Marker.toggleWhole(s.id, g.index) }
+            Box {
+                SmallBtn("…") { more = true }
+                DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
+                    DropdownMenuItem(text = { Text(if (showRaw) "元の文字起こしを隠す" else "元の文字起こしを見る") }, onClick = { more = false; showRaw = !showRaw })
+                    if (g.edited != null) {
+                        DropdownMenuItem(text = { Text("自分の直しをやめて AI の文に戻す") }, onClick = {
+                            more = false
+                            Repo.updateSegment(s.id, g.index) { it.copy(edited = null) }
+                            Processor.wake(); onClose()
+                        })
+                    }
+                    DropdownMenuItem(text = { Text("整形だけやり直す") }, onClick = {
+                        more = false
+                        Repo.updateSegment(s.id, g.index) { it.copy(formatted = null, polished = false, edited = null) }
+                        Processor.wake(); onClose()
+                    })
+                    DropdownMenuItem(text = { Text("文字起こしからやり直す") }, onClick = {
+                        more = false
+                        Repo.updateSegment(s.id, g.index) { it.copy(raw = null, rawEngine = null, formatted = null, polished = false, edited = null, error = null, silent = false) }
+                        Processor.wake(); onClose()
+                    })
+                }
+            }
+        }
+        g.highlights.filter { it != Marker.WHOLE }.forEach { h ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("🖍 $h", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                SmallBtn("×") { Marker.remove(s.id, g.index, h) }
+            }
+        }
+        if (showRaw) {
+            Text(
+                "元（${engineLabel(g.rawEngine, g.rawModel)}・${fmtClock(g.startMs)}〜${fmtClock(g.endMs)}）：${g.raw ?: "（まだ）"}",
+                style = MaterialTheme.typography.bodySmall,
+                color = cs.outline,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SmallBtn(label: String, enabled: Boolean = true, primary: Boolean = false, onClick: () -> Unit) {
+    TextButton(
+        onClick = onClick,
+        enabled = enabled,
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+        modifier = Modifier.heightIn(min = 36.dp),
+    ) { Text(label, fontWeight = if (primary) FontWeight.Bold else FontWeight.Normal) }
+}
+
+/** 「直し方を覚えました」を、画面の下に帯で出す */
+@Composable
+private fun LearnedBar(s: Session, segIndex: Int, fixes: List<Corrections.Fix>, onClose: () -> Unit) {
+    val context = LocalContext.current
+    val others = remember(fixes) { Corrections.countOthers(s, segIndex, fixes) }
+    var addedGlossary by remember(fixes) { mutableStateOf(false) }
+    var fixedOthers by remember(fixes) { mutableStateOf(false) }
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp)
+            .background(MaterialTheme.colorScheme.tertiaryContainer, RoundedCornerShape(8.dp))
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+    ) {
+        Text("覚えた直し：${fixes.joinToString("、")}（この先の文字起こし・整形に使います）", style = MaterialTheme.typography.bodySmall)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            SmallBtn(if (addedGlossary) "用語集に足しました" else "用語集にも足す", enabled = !addedGlossary) {
+                Glossary.append(context, fixes.map { it.toString() }, "直したところから")
+                addedGlossary = true
+            }
+            if (others > 0) {
+                SmallBtn(if (fixedOthers) "直しました" else "ほかの${others}か所も直す", enabled = !fixedOthers) {
+                    Corrections.applyToOthers(s.id, segIndex, fixes)
+                    fixedOthers = true
+                }
+            }
+            SmallBtn("閉じる") { onClose() }
+        }
+    }
+}
+
+/** ★ を付けたあと、メモをその場で書く帯 */
+@Composable
+private fun NoteBar(timeMs: Long, onSave: (String) -> Unit, onClose: () -> Unit) {
+    var note by remember(timeMs) { mutableStateOf("") }
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        Text("★ ${fmtClock(timeMs)}", color = MaterialTheme.colorScheme.tertiary, fontWeight = FontWeight.Bold)
+        OutlinedTextField(
+            value = note, onValueChange = { note = it },
+            placeholder = { Text("メモ（なくてもよい）") },
+            singleLine = true,
+            modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
+        )
+        SmallBtn("保存", primary = true, enabled = note.isNotBlank()) { onSave(note.trim()) }
+        SmallBtn("×") { onClose() }
     }
 }
 
