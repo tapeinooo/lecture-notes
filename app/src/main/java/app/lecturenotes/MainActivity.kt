@@ -57,6 +57,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -316,7 +317,7 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
                                 val f = withContext(Dispatchers.IO) {
                                     Export.buildAudio(context, s) { p -> busy = "音声をまとめています… ${(p * 100).toInt()}%" }
                                 }
-                                Export.shareFile(context, f, "audio/wav")
+                                Export.shareFile(context, f, "audio/mp4")
                             } catch (e: Exception) {
                                 busy = null
                                 Processor.status.value = "音声を書き出せません: ${e.message}"
@@ -428,7 +429,7 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
             title = { Text("${fmtClock(g.startMs)}〜${fmtClock(g.endMs)}") },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
-                    Text("文字起こし（${engineLabel(g.rawEngine)}）", style = MaterialTheme.typography.labelMedium)
+                    Text("文字起こし（${engineLabel(g.rawEngine, g.rawModel)}）", style = MaterialTheme.typography.labelMedium)
                     Text(g.raw ?: "（まだ）", style = MaterialTheme.typography.bodySmall)
                     g.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                     Spacer(Modifier.height(8.dp))
@@ -497,8 +498,8 @@ private fun SegmentRow(g: Segment, onClick: () -> Unit) {
     val linkColor = MaterialTheme.colorScheme.primary
     Column(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 6.dp)) {
         val tag = when {
-            g.formatted != null -> "整形済み"
-            g.raw != null -> engineLabel(g.rawEngine)
+            g.formatted != null -> "整形済み" + (g.formatModel?.let { "（$it）" } ?: "")
+            g.raw != null -> engineLabel(g.rawEngine, g.rawModel)
             else -> ""
         }
         Text("${fmtClock(g.startMs)}  $tag", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
@@ -529,9 +530,11 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
     var mode by remember { mutableStateOf(st.mode) }
     var groqKey by remember { mutableStateOf(st.groqKey) }
     var geminiKey by remember { mutableStateOf(st.geminiKey) }
-    var groqStt by remember { mutableStateOf(st.groqSttModel) }
-    var groqChat by remember { mutableStateOf(st.groqChatModel) }
-    var gemini by remember { mutableStateOf(st.geminiModels) }
+    var autoModels by remember { mutableStateOf(st.autoModels) }
+    var manualStt by remember { mutableStateOf(st.manualStt) }
+    var manualFormat by remember { mutableStateOf(st.manualFormat) }
+    var catalogMsg by remember { mutableStateOf("") }
+    var tick by remember { mutableStateOf(0) }
     var chunk by remember { mutableStateOf(st.chunkSeconds.toString()) }
     var batch by remember { mutableStateOf(st.formatBatch.toString()) }
     var formatOn by remember { mutableStateOf(st.formatEnabled) }
@@ -586,9 +589,38 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
             if (testResult.isNotEmpty()) Text(testResult, style = MaterialTheme.typography.bodySmall)
 
             Section("モデル")
-            Field("Gemini のモデル（カンマ区切り。前から順に使う）", gemini) { gemini = it; st.geminiModels = it }
-            Field("Groq の文字起こしモデル", groqStt) { groqStt = it; st.groqSttModel = it.trim() }
-            Field("Groq の整形モデル", groqChat) { groqChat = it; st.groqChatModel = it.trim() }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = autoModels, onCheckedChange = { autoModels = it; st.autoModels = it; Processor.wake() })
+                Text("自動で選ぶ（おすすめ）", Modifier.padding(start = 8.dp))
+            }
+            Text(
+                "使えるモデルの一覧を取ってきて、聞き取りは「速くて回数が多いもの」、整形は「頭の良いもの」から順に使います。" +
+                    "制限にかかったら次のモデルへ、制限が戻ればまた上のモデルへ戻ります。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
+            OutlinedButton(onClick = {
+                scope.launch {
+                    catalogMsg = "取っています…"
+                    catalogMsg = withContext(Dispatchers.IO) { Catalog.refresh(context, st) }
+                    tick++
+                }
+            }) { Text("モデルの一覧を取り直す") }
+            if (catalogMsg.isNotEmpty()) Text(catalogMsg, style = MaterialTheme.typography.bodySmall)
+            if (!autoModels) {
+                Text("1行に「groq:モデル名」か「gemini:モデル名」。上から使います。", style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(
+                    value = manualStt, onValueChange = { manualStt = it; st.manualStt = it },
+                    label = { Text(Role.STT.label) }, modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                )
+                OutlinedTextField(
+                    value = manualFormat, onValueChange = { manualFormat = it; st.manualFormat = it },
+                    label = { Text(Role.FORMAT.label) }, modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                )
+            }
+            key(tick, autoModels, mode, groqKey, geminiKey) {
+                ModelOrder(st)
+            }
 
             Section("整形")
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -622,6 +654,38 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
             if (updateResult.isNotEmpty()) Text(updateResult, style = MaterialTheme.typography.bodySmall)
             UpdateBanner()
             Spacer(Modifier.height(32.dp))
+        }
+    }
+}
+
+@Composable
+private fun ModelOrder(st: Settings) {
+    val context = LocalContext.current
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(5000)
+            now = System.currentTimeMillis()
+        }
+    }
+    Role.entries.forEach { role ->
+        Spacer(Modifier.height(8.dp))
+        Text("${role.label}の順番", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+        val list = remember(now) { Catalog.candidates(context, st, role) }
+        if (list.isEmpty()) {
+            Text("（使えるモデルがありません。キーを入れてください）", style = MaterialTheme.typography.bodySmall)
+        }
+        list.forEachIndexed { i, c ->
+            val wait = Cooldown.remainingMs(c.key)
+            val state = if (wait > 0) {
+                val m = wait / 60000
+                if (m >= 60) "休み（あと${m / 60}時間${m % 60}分）" else "休み（あと${m + 1}分）"
+            } else "使える"
+            Text(
+                "${i + 1}. ${c.model}（${if (c.provider == "groq") "Groq" else "Gemini"}）　$state・今日 ${Usage.get(c.key)} 回",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (wait > 0) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.onSurface,
+            )
         }
     }
 }
@@ -689,6 +753,9 @@ fun GlossaryScreen(onBack: () -> Unit) {
     var text by remember { mutableStateOf(Glossary.load(context)) }
     var saved by remember { mutableStateOf(true) }
     var confirmReset by remember { mutableStateOf(false) }
+    var importing by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf("") }
+    val uri = LocalUriHandler.current
     Column(Modifier.fillMaxSize()) {
         Header("用語集", onBack) {
             TextButton(onClick = { Glossary.save(context, text); saved = true }, enabled = !saved) { Text("保存") }
@@ -698,12 +765,30 @@ fun GlossaryScreen(onBack: () -> Unit) {
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(horizontal = 16.dp),
         )
+        if (message.isNotEmpty()) Text(message, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(horizontal = 16.dp))
         OutlinedTextField(
             value = text,
             onValueChange = { text = it; saved = false },
             modifier = Modifier.fillMaxWidth().weight(1f).heightIn(min = 200.dp).padding(16.dp),
         )
+        Row(Modifier.padding(horizontal = 8.dp)) {
+            TextButton(onClick = { importing = true }) { Text("貼り付けて取り込む") }
+            TextButton(onClick = { uri.openUri(WOL_GLOSSARY_SEARCH) }) { Text("wol.jw.org を開く") }
+        }
         TextButton(onClick = { confirmReset = true }, modifier = Modifier.padding(horizontal = 8.dp)) { Text("最初の内容に戻す") }
+    }
+    if (importing) {
+        ImportDialog(
+            onDismiss = { importing = false },
+            onAdd = { words ->
+                if (!saved) Glossary.save(context, text)
+                val n = Glossary.append(context, words, "wol.jw.org から取り込み")
+                text = Glossary.load(context)
+                saved = true
+                importing = false
+                message = "${n}語を足しました"
+            },
+        )
     }
     if (confirmReset) {
         AlertDialog(
@@ -721,4 +806,49 @@ fun GlossaryScreen(onBack: () -> Unit) {
             dismissButton = { TextButton(onClick = { confirmReset = false }) { Text("やめる") } },
         )
     }
+}
+
+private const val WOL_GLOSSARY_SEARCH = "https://wol.jw.org/ja/wol/s/r7/lp-j?q=%E7%94%A8%E8%AA%9E%E9%9B%86"
+
+@Composable
+private fun ImportDialog(onDismiss: () -> Unit, onAdd: (List<String>) -> Unit) {
+    var pasted by remember { mutableStateOf("") }
+    var words by remember { mutableStateOf<String?>(null) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (words == null) "貼り付けて取り込む" else "取り出した語（直せます）") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                val w = words
+                if (w == null) {
+                    Text(
+                        "wol.jw.org で聖書の付録の「用語集」などを開き、本文をコピーしてここに貼り付けてください。見出し語だけを取り出します。",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    OutlinedTextField(
+                        value = pasted, onValueChange = { pasted = it },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 160.dp, max = 320.dp),
+                    )
+                } else {
+                    Text(
+                        "${w.lines().count { it.isNotBlank() }}語。余計な語は消してください。すでに用語集にある語は足しません。",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    OutlinedTextField(
+                        value = w, onValueChange = { words = it },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 160.dp, max = 320.dp),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            val w = words
+            if (w == null) {
+                Button(onClick = { words = Glossary.extractHeadwords(pasted).joinToString("\n") }, enabled = pasted.isNotBlank()) { Text("取り出す") }
+            } else {
+                Button(onClick = { onAdd(w.lines().filter { it.isNotBlank() }) }) { Text("用語集に足す") }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("やめる") } },
+    )
 }

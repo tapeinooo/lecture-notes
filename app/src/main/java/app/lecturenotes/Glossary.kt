@@ -45,4 +45,39 @@ object Glossary {
         if (sb.isNotEmpty()) sb.append('。')
         return sb.toString()
     }
+
+    /**
+     * wol.jw.org の「用語集」などから貼り付けた文から、見出し語を取り出す。
+     * 「見出し語＋説明」が1行のものと、見出し語の行の次に説明の行が来るものの両方に対応する。
+     * 取り出した結果は、画面で確かめて直してから足す。
+     */
+    fun extractHeadwords(pasted: String): List<String> {
+        val lines = pasted.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val stops = charArrayOf(' ', '　', '「', '（', '(', '：', ':', '，', ',', '、', '。', '—', '－', '\t')
+        val out = LinkedHashSet<String>()
+        fun add(w: String) {
+            val t = w.trim().trimStart('・', '•', '*', '■', '◆', '●').trim().trimEnd('：', ':', '—', '－')
+            if (t.length in 1..20 && t.any { !it.isDigit() } && !t.contains('。')) out.add(t)
+        }
+        lines.forEachIndexed { i, line ->
+            val next = lines.getOrNull(i + 1)
+            if (line.length <= 20 && !line.contains('。') && next != null && next.length > 20) {
+                add(line)
+            } else if (line.length > 20) {
+                val cut = line.indexOfAny(stops)
+                if (cut in 1..20) add(line.substring(0, cut))
+            }
+        }
+        return out.toList()
+    }
+
+    /** 用語集にない語だけを、見出しを付けて末尾に足す */
+    fun append(context: Context, words: List<String>, heading: String): Int {
+        val cur = load(context)
+        val have = terms(cur).toSet() + entries(cur).toSet()
+        val add = words.map { it.trim() }.filter { it.isNotEmpty() && it !in have }.distinct()
+        if (add.isEmpty()) return 0
+        save(context, cur.trimEnd() + "\n\n# $heading\n" + add.joinToString("\n") + "\n")
+        return add.size
+    }
 }

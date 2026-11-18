@@ -65,10 +65,20 @@ object Http {
     private fun waitFrom(c: HttpURLConnection, body: String, code: Int): Long {
         if (code != 429) return 30_000
         c.getHeaderField("retry-after")?.trim()?.toDoubleOrNull()?.let { return (it * 1000).toLong().coerceAtLeast(5_000) }
+        // 無料枠では使えないモデル
+        if (Regex("limit:\\s*0\\b").containsMatchIn(body)) return 24 * 3600_000L
+        // 1日の上限：Gemini は太平洋時間の0時に戻る
+        if (body.contains("PerDay", ignoreCase = true) || body.contains("per day", ignoreCase = true)) return msUntilPacificMidnight()
         // Gemini: "retryDelay": "36s"
         Regex("\"retryDelay\"\\s*:\\s*\"(\\d+)").find(body)?.let { return it.groupValues[1].toLong() * 1000 + 1000 }
-        if (body.contains("PerDay", ignoreCase = true) || body.contains("per day", ignoreCase = true)) return 60 * 60_000L
         return 60_000
+    }
+
+    private fun msUntilPacificMidnight(): Long {
+        val zone = java.time.ZoneId.of("America/Los_Angeles")
+        val now = java.time.ZonedDateTime.now(zone)
+        val next = now.toLocalDate().plusDays(1).atStartOfDay(zone)
+        return java.time.Duration.between(now, next).toMillis() + 60_000
     }
 }
 
@@ -117,7 +127,7 @@ object Groq {
         field("response_format", "json")
         field("temperature", "0")
         if (prompt.isNotBlank()) field("prompt", prompt)
-        out.write("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"${wav.name}\"\r\nContent-Type: audio/wav\r\n\r\n".toByteArray())
+        out.write("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"${wav.name}\"\r\nContent-Type: ${Audio.mime(wav)}\r\n\r\n".toByteArray())
         out.write(wav.readBytes())
         out.write("\r\n--$boundary--\r\n".toByteArray())
         val resp = Http.post(
@@ -161,12 +171,17 @@ object Gemini {
     fun cooldownKey(model: String) = "gemini:$model"
 
     fun generate(key: String, model: String, system: String?, parts: JSONArray, json: Boolean): String {
+        // Gemma は systemInstruction と JSON 指定を受け付けないので、本文の先頭に入れる
+        val gemma = model.startsWith("gemma")
         val body = JSONObject().apply {
-            if (system != null) put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
-            put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", parts)))
+            if (system != null && !gemma) put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
+            val ps = if (system != null && gemma) {
+                JSONArray().put(JSONObject().put("text", system)).also { a -> for (i in 0 until parts.length()) a.put(parts.get(i)) }
+            } else parts
+            put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", ps)))
             put("generationConfig", JSONObject().apply {
                 put("temperature", 0.2)
-                if (json) put("responseMimeType", "application/json")
+                if (json && !gemma) put("responseMimeType", "application/json")
             })
         }
         val resp = Http.post(
@@ -186,12 +201,12 @@ object Gemini {
         }
     }
 
-    fun transcribe(key: String, model: String, wav: File, prompt: String): String {
+    fun transcribe(key: String, model: String, audio: File, prompt: String): String {
         val parts = JSONArray()
             .put(JSONObject().put("text", prompt))
             .put(JSONObject().put("inline_data", JSONObject()
                 .put("mime_type", "audio/wav")
-                .put("data", Base64.encodeToString(wav.readBytes(), Base64.NO_WRAP))))
+                .put("data", Base64.encodeToString(Audio.toWavBytes(audio), Base64.NO_WRAP))))
         return generate(key, model, null, parts, json = false).trim()
     }
 
@@ -207,6 +222,6 @@ object Gemini {
                 methods != null && (0 until methods.length()).any { methods.getString(it) == "generateContent" }
             }
             .map { it.optString("name").removePrefix("models/") }
-            .filter { it.startsWith("gemini") }
+            .filter { it.startsWith("gemini") || it.startsWith("gemma") }
     }
 }

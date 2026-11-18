@@ -8,7 +8,7 @@ import java.nio.ByteOrder
 const val SAMPLE_RATE = 16000
 
 object Wav {
-    fun header(dataLen: Long, rate: Int = SAMPLE_RATE): ByteArray {
+    fun header(dataLen: Long, rate: Int = SAMPLE_RATE, channels: Int = 1): ByteArray {
         val b = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
         b.put("RIFF".toByteArray())
         b.putInt((36 + dataLen).toInt())
@@ -16,10 +16,10 @@ object Wav {
         b.put("fmt ".toByteArray())
         b.putInt(16)
         b.putShort(1) // PCM
-        b.putShort(1) // mono
+        b.putShort(channels.toShort())
         b.putInt(rate)
-        b.putInt(rate * 2)
-        b.putShort(2)
+        b.putInt(rate * 2 * channels)
+        b.putShort((2 * channels).toShort())
         b.putShort(16)
         b.put("data".toByteArray())
         b.putInt(dataLen.toInt())

@@ -21,6 +21,9 @@ data class Segment(
     val rawEngine: String? = null,
     /** 整形後（null = まだ） */
     val formatted: String? = null,
+    /** 文字起こし・整形に使ったモデル */
+    val rawModel: String? = null,
+    val formatModel: String? = null,
     val silent: Boolean = false,
     val error: String? = null,
 )
@@ -114,6 +117,8 @@ object Repo {
                     g.raw?.let { put("raw", it) }
                     g.rawEngine?.let { put("rawEngine", it) }
                     g.formatted?.let { put("formatted", it) }
+                    g.rawModel?.let { put("rawModel", it) }
+                    g.formatModel?.let { put("formatModel", it) }
                     put("silent", g.silent)
                     g.error?.let { put("error", it) }
                 })
@@ -144,6 +149,8 @@ object Repo {
                     raw = g.optStr("raw"),
                     rawEngine = g.optStr("rawEngine"),
                     formatted = g.optStr("formatted"),
+                    rawModel = g.optStr("rawModel"),
+                    formatModel = g.optStr("formatModel"),
                     silent = g.optBoolean("silent"),
                     error = g.optStr("error"),
                 )

@@ -57,20 +57,11 @@ object Processor {
 
     // ---------- どの方法が使えるか ----------
 
-    private fun groqUsable() = settings.groqKey.isNotBlank() && Cooldown.ok(Groq.sttKey(settings.groqSttModel))
-    private fun geminiUsableModels() =
-        if (settings.geminiKey.isBlank()) emptyList() else settings.geminiModelList().filter { Cooldown.ok(Gemini.cooldownKey(it)) }
+    private fun usable(role: Role): List<Cand> =
+        Catalog.candidates(app, settings, role).filter { Cooldown.ok(it.key) }
 
     /** いまクラウドで文字起こしできるか（録音側が端末内の文字起こしを使うかの判断にも使う） */
-    fun cloudSttAvailable(): Boolean {
-        if (!Net.online(app)) return false
-        return when (settings.mode) {
-            Mode.AUTO -> groqUsable() || geminiUsableModels().isNotEmpty()
-            Mode.GROQ -> groqUsable()
-            Mode.GEMINI -> geminiUsableModels().isNotEmpty()
-            Mode.LOCAL -> false
-        }
-    }
+    fun cloudSttAvailable(): Boolean = Net.online(app) && usable(Role.STT).isNotEmpty()
 
     /** 端末内の文字起こしを使うべきか */
     fun shouldUseLocal(): Boolean = when (settings.mode) {
@@ -98,6 +89,11 @@ object Processor {
         val sessions = Repo.sessions.value.sortedByDescending { it.recording }
         val online = Net.online(app)
 
+        if (online && Catalog.needsRefresh(app, settings)) {
+            status.value = "使えるモデルを確かめています…"
+            Catalog.refresh(app, settings)
+        }
+
         if (online) {
             for (s in sessions) {
                 val seg = s.segments.firstOrNull { needsStt(it) } ?: continue
@@ -118,7 +114,35 @@ object Processor {
             }
         }
 
+        if (compressOne(sessions)) return true
+
         status.value = idleStatus(online)
+        return false
+    }
+
+    /** 古い WAV の区間を m4a に変えて小さくする（文字起こしが済んだもの） */
+    private fun compressOne(sessions: List<Session>): Boolean {
+        for (s in sessions) {
+            if (s.recording) continue
+            val seg = s.segments.firstOrNull { it.audio.endsWith(".wav") && !needsStt(it) } ?: continue
+            val wav = Repo.audioFile(s.id, seg)
+            val m4a = java.io.File(wav.parentFile, wav.name.removeSuffix(".wav") + ".m4a")
+            status.value = "音声を小さくしています（${s.title}）"
+            try {
+                if (wav.exists()) Audio.wavToM4a(wav, m4a)
+                if (m4a.exists() && m4a.length() > 0) {
+                    Repo.updateSegment(s.id, seg.index) { it.copy(audio = m4a.name) }
+                    wav.delete()
+                } else {
+                    return false
+                }
+            } catch (e: Exception) {
+                m4a.delete()
+                status.value = "音声を小さくできません: ${e.message?.take(80)}"
+                return false
+            }
+            return true
+        }
         return false
     }
 
@@ -133,19 +157,15 @@ object Processor {
 
     private fun failKey(s: Session, seg: Segment) = "${s.id}/${seg.index}"
 
-    private fun onSegmentError(s: Session, seg: Segment, e: Exception, provider: String, cooldownKey: String) {
+    private fun onSegmentError(s: Session, seg: Segment, e: Exception, c: Cand) {
         val msg = e.message?.take(200) ?: e.javaClass.simpleName
-        if (e is HttpError && e.code in listOf(400, 401, 403, 404)) {
-            // 鍵やモデル名の誤り。しばらくそのサービスを使わない
-            Cooldown.set(cooldownKey, 10 * 60_000L, "$provider: $msg")
-        }
         val k = failKey(s, seg)
         val n = (failures[k] ?: 0) + 1
         failures[k] = n
         if (n >= 3 && seg.raw == null) {
             Repo.updateSegment(s.id, seg.index) { it.copy(raw = "", rawEngine = "error", error = msg) }
         }
-        status.value = "$provider: $msg"
+        status.value = "${c.model}: $msg"
     }
 
     private fun transcribe(s: Session, seg: Segment): Outcome {
@@ -155,45 +175,38 @@ object Processor {
             return Outcome.DONE
         }
         val glossary = Glossary.load(app)
-        val useGroq = settings.mode == Mode.AUTO || settings.mode == Mode.GROQ
-        val useGemini = settings.mode == Mode.AUTO || settings.mode == Mode.GEMINI
-
-        if (useGroq && groqUsable()) {
-            val model = settings.groqSttModel
-            status.value = "Groq で文字起こし中（${fmtClock(seg.startMs)}）"
+        for (c in usable(Role.STT)) {
+            status.value = "${c.model} で文字起こし中（${fmtClock(seg.startMs)}）"
             try {
-                val text = cleanStt(Groq.transcribe(settings.groqKey, model, file, Glossary.whisperPrompt(glossary)))
-                save(s, seg, text, "groq")
+                val text = when (c.provider) {
+                    "groq" -> Groq.transcribe(settings.groqKey, c.model, file, Glossary.whisperPrompt(glossary))
+                    else -> Gemini.transcribe(settings.geminiKey, c.model, file, Prompts.stt(glossary))
+                }
+                Usage.add(c.key)
+                save(s, seg, cleanStt(text), c)
                 return Outcome.DONE
             } catch (e: RateLimited) {
-                Cooldown.set(Groq.sttKey(model), e.waitMs, "Groq: ${e.message}")
-            } catch (e: Exception) {
-                onSegmentError(s, seg, e, "Groq", Groq.sttKey(model))
-                return Outcome.DONE
-            }
-        }
-        if (useGemini) {
-            for (model in geminiUsableModels()) {
-                status.value = "Gemini（$model）で文字起こし中（${fmtClock(seg.startMs)}）"
-                try {
-                    val text = cleanStt(Gemini.transcribe(settings.geminiKey, model, file, Prompts.stt(glossary)))
-                    save(s, seg, text, "gemini")
-                    return Outcome.DONE
-                } catch (e: RateLimited) {
-                    Cooldown.set(Gemini.cooldownKey(model), e.waitMs, "Gemini $model: ${e.message}")
-                } catch (e: Exception) {
-                    onSegmentError(s, seg, e, "Gemini", Gemini.cooldownKey(model))
-                    return Outcome.DONE
+                Cooldown.set(c.key, e.waitMs, "${c.model}: ${e.message?.take(120)}")
+            } catch (e: HttpError) {
+                if (e.code in listOf(400, 401, 403, 404)) {
+                    // 鍵の誤り・使えないモデル。そのモデルはしばらく使わず次へ
+                    Cooldown.set(c.key, 30 * 60_000L, "${c.model}: ${e.message?.take(120)}")
+                    continue
                 }
+                onSegmentError(s, seg, e, c)
+                return Outcome.DONE
+            } catch (e: Exception) {
+                onSegmentError(s, seg, e, c)
+                return Outcome.DONE
             }
         }
         return Outcome.UNAVAILABLE
     }
 
-    private fun save(s: Session, seg: Segment, text: String, engine: String) {
+    private fun save(s: Session, seg: Segment, text: String, c: Cand) {
         Repo.updateSegment(s.id, seg.index) {
             // 起こし直したら整形もやり直す
-            it.copy(raw = text, rawEngine = engine, formatted = null, error = null)
+            it.copy(raw = text, rawEngine = c.provider, rawModel = c.model, formatted = null, formatModel = null, error = null)
         }
     }
 
@@ -242,67 +255,53 @@ object Processor {
         val system = Prompts.formatSystem(glossary)
         val user = Prompts.formatUser(context, batch.map { it.raw ?: "" })
 
-        val tryGemini = settings.geminiKey.isNotBlank()
-        if (tryGemini) {
-            for (model in geminiUsableModels()) {
-                status.value = "Gemini（$model）で整形中（${fmtClock(batch.first().startMs)}〜）"
-                try {
-                    val out = Gemini.text(settings.geminiKey, model, system, user)
-                    applyFormatted(s, batch, out)
-                    return Outcome.DONE
-                } catch (e: RateLimited) {
-                    Cooldown.set(Gemini.cooldownKey(model), e.waitMs, "Gemini $model: ${e.message}")
-                } catch (e: Exception) {
-                    if (handleFormatError(s, batch, e, "Gemini", Gemini.cooldownKey(model))) return Outcome.DONE
+        for (c in usable(Role.FORMAT)) {
+            status.value = "${c.model} で整形中（${fmtClock(batch.first().startMs)}〜）"
+            try {
+                val out = when (c.provider) {
+                    "groq" -> Groq.chat(settings.groqKey, c.model, system, user)
+                    else -> Gemini.text(settings.geminiKey, c.model, system, user)
                 }
-            }
-        }
-        if (settings.groqKey.isNotBlank()) {
-            val model = settings.groqChatModel
-            val key = Groq.chatKey(model)
-            if (Cooldown.ok(key)) {
-                status.value = "Groq（$model）で整形中（${fmtClock(batch.first().startMs)}〜）"
-                try {
-                    val out = Groq.chat(settings.groqKey, model, system, user)
-                    applyFormatted(s, batch, out)
-                    return Outcome.DONE
-                } catch (e: RateLimited) {
-                    Cooldown.set(key, e.waitMs, "Groq $model: ${e.message}")
-                } catch (e: Exception) {
-                    if (handleFormatError(s, batch, e, "Groq", key)) return Outcome.DONE
-                }
+                Usage.add(c.key)
+                applyFormatted(s, batch, out, c)
+                return Outcome.DONE
+            } catch (e: RateLimited) {
+                Cooldown.set(c.key, e.waitMs, "${c.model}: ${e.message?.take(120)}")
+            } catch (e: Exception) {
+                if (handleFormatError(s, batch, e, c)) return Outcome.DONE
             }
         }
         return Outcome.UNAVAILABLE
     }
 
-    /** true = この区間はあきらめた（次へ進む） */
-    private fun handleFormatError(s: Session, batch: List<Segment>, e: Exception, provider: String, key: String): Boolean {
+    /** true = この区間はあきらめた（次へ進む）。false = 次のモデルを試す */
+    private fun handleFormatError(s: Session, batch: List<Segment>, e: Exception, c: Cand): Boolean {
         val msg = e.message?.take(200) ?: e.javaClass.simpleName
-        status.value = "$provider 整形: $msg"
+        status.value = "${c.model} 整形: $msg"
         if (e is HttpError && e.code in listOf(400, 401, 403, 404)) {
-            Cooldown.set(key, 10 * 60_000L, "$provider: $msg")
+            Cooldown.set(c.key, 30 * 60_000L, "${c.model}: $msg")
             return false
         }
         val k = "fmt:${s.id}/${batch.first().index}"
         val n = (failures[k] ?: 0) + 1
         failures[k] = n
-        if (n >= 3) {
+        if (n >= 4) {
             // 整形できなかったら、文字起こしのまま残す
-            batch.forEach { g -> Repo.updateSegment(s.id, g.index) { it.copy(formatted = it.raw) } }
+            batch.forEach { g -> Repo.updateSegment(s.id, g.index) { it.copy(formatted = it.raw, formatModel = "（整形できず）") } }
             return true
         }
+        // 結果の形が崩れていた（頭の弱いモデルで起こりやすい）ときは、次のモデルで試す
         return false
     }
 
-    private fun applyFormatted(s: Session, batch: List<Segment>, output: String) {
+    private fun applyFormatted(s: Session, batch: List<Segment>, output: String, c: Cand) {
         val list = parseSegments(output) ?: throw IllegalStateException("整形の結果を読めません: ${output.take(120)}")
         val texts = if (list.size == batch.size) list else {
             // 数が合わないときは、まとめて最初の区間に入れる
             listOf(list.joinToString("")) + List(batch.size - 1) { "" }
         }
         batch.forEachIndexed { i, g ->
-            Repo.updateSegment(s.id, g.index) { it.copy(formatted = texts[i].trim()) }
+            Repo.updateSegment(s.id, g.index) { it.copy(formatted = texts[i].trim(), formatModel = c.model) }
         }
     }
 

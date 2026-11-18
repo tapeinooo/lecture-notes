@@ -177,8 +177,8 @@ class RecorderService : Service() {
 
         while (running) {
             val chunkSamples = settings.chunkSeconds.coerceIn(10, 120) * SAMPLE_RATE
-            val name = "chunk_%05d.wav".format(index)
-            val writer = Wav.Writer(java.io.File(Repo.audioDir(id), name))
+            val writer = Audio.newChunk(Repo.audioDir(id), index)
+            val name = writer.file.name
             var samples = 0
             var loudFrames = 0
             var frames = 0
@@ -197,12 +197,18 @@ class RecorderService : Service() {
                 if (rms > 250) loudFrames++
                 Live.state.update { it.copy(level = (rms / 4000.0).coerceIn(0.0, 1.0).toFloat()) }
             }
-            writer.close()
+            runCatching { writer.close() }
 
             val durMs = samples * 1000L / SAMPLE_RATE
             if (durMs < 1000) {
                 writer.file.delete()
                 break
+            }
+            if (!writer.file.exists()) {
+                Live.state.update { it.copy(error = "音声を保存できなかった区間があります") }
+                startMs += durMs
+                index++
+                continue
             }
             // ほとんど音がない区間は文字起こしに送らない
             val silent = frames > 0 && loudFrames * 100 / frames < 2

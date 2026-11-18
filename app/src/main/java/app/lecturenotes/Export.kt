@@ -15,7 +15,7 @@ fun fmtClock(ms: Long): String {
 
 fun fmtDate(ms: Long): String = SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.JAPAN).format(Date(ms))
 
-fun engineLabel(e: String?) = when (e) {
+fun engineLabel(e: String?, model: String? = null): String = model ?: when (e) {
     "groq" -> "Groq"
     "gemini" -> "Gemini"
     "local" -> "端末内"
@@ -68,11 +68,17 @@ object Export {
         context.startActivity(Intent.createChooser(send, "書き出す").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 
-    /** 区間の音声を1つの WAV にまとめて共有する（時間がかかるので裏で呼ぶ） */
+    /** 区間の音声を1つの m4a にまとめる（時間がかかるので裏で呼ぶ） */
     fun buildAudio(context: Context, s: Session, onProgress: (Float) -> Unit): File {
-        val files = s.segments.map { Repo.audioFile(s.id, it) }.filter { it.exists() }
-        val out = File(shareDir(context), "${safeName(s.title)}.wav")
-        Wav.merge(files, out, onProgress)
+        val dir = shareDir(context)
+        val tmp = File(dir, "tmp").apply { mkdirs() }
+        // 古い WAV の区間は、先に m4a に変える
+        val files = s.segments.map { Repo.audioFile(s.id, it) }.filter { it.exists() }.map { f ->
+            if (f.name.endsWith(".wav")) File(tmp, f.name.removeSuffix(".wav") + ".m4a").also { Audio.wavToM4a(f, it) } else f
+        }
+        val out = File(dir, "${safeName(s.title)}.m4a")
+        Audio.concatM4a(files, out, onProgress)
+        tmp.deleteRecursively()
         return out
     }
 

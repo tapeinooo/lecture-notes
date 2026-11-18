@@ -45,11 +45,12 @@ class Settings(context: Context) {
     var groqKey by str("groqKey", "")
     var geminiKey by str("geminiKey", "")
 
-    var groqSttModel by str("groqSttModel", "whisper-large-v3")
-    var groqChatModel by str("groqChatModel", "openai/gpt-oss-120b")
+    /** モデルを自動で選ぶ（一覧を取ってきて役割ごとに順番を付ける） */
+    var autoModels by bool("autoModels", true)
 
-    /** カンマ区切り。前から順に使い、制限にかかったら次へ */
-    var geminiModels by str("geminiModels", "gemini-2.5-flash,gemini-2.5-flash-lite")
+    /** 自動で選ばないときの順番（1行に「groq:モデル名」か「gemini:モデル名」） */
+    var manualStt by str("manualStt", Catalog.DEFAULT_MANUAL_STT)
+    var manualFormat by str("manualFormat", Catalog.DEFAULT_MANUAL_FORMAT)
 
     /** 音声を区切る長さ（秒） */
     var chunkSeconds by int("chunkSeconds", 30)
@@ -58,7 +59,4 @@ class Settings(context: Context) {
     var formatBatch by int("formatBatch", 4)
 
     var formatEnabled by bool("formatEnabled", true)
-
-    fun geminiModelList(): List<String> =
-        geminiModels.split(',', '、', '\n').map { it.trim() }.filter { it.isNotEmpty() }
 }
