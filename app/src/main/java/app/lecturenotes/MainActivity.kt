@@ -103,6 +103,8 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.animation.core.animateFloat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -387,7 +389,7 @@ fun DetailScreen(id: String, onBack: () -> Unit, onSettings: () -> Unit) {
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
         LazyColumn(
-            Modifier.fillMaxSize().padding(start = 4.dp, end = 18.dp).onGloballyPositioned {
+            Modifier.fillMaxSize().padding(start = 16.dp, end = 16.dp).onGloballyPositioned {
                 val b = it.boundsInWindow()
                 listTop = b.top
                 listHeight = b.height
@@ -421,12 +423,45 @@ fun DetailScreen(id: String, onBack: () -> Unit, onSettings: () -> Unit) {
         HorizontalDivider()
         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
             val p = Processor.pendingCounts(s)
-            Text(
-                "清書待ち ${p.stt}・整形待ち ${p.fast}・仕上げ待ち ${p.polish}　$status" +
-                    (if (polishStatus.isNotEmpty()) "　$polishStatus" else ""),
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 2,
-            )
+            val act by Processor.activity.collectAsState()
+            val pact by Processor.polishActivity.collectAsState()
+            var detail by remember { mutableStateOf(false) }
+            val working = listOfNotNull(act, pact)
+            // ふだんは短く。押すと詳しい状態を出す
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().clickable { detail = !detail },
+            ) {
+                if (working.isNotEmpty()) {
+                    WritingIcon()
+                    Spacer(Modifier.width(6.dp))
+                    Text(working.joinToString("・"), style = MaterialTheme.typography.labelMedium)
+                    Spacer(Modifier.width(8.dp))
+                }
+                val waits = listOfNotNull(
+                    if (p.stt > 0) "清書${p.stt}" else null,
+                    if (p.fast > 0) "整形${p.fast}" else null,
+                    if (p.polish > 0) "仕上げ${p.polish}" else null,
+                )
+                Text(
+                    when {
+                        waits.isNotEmpty() -> "待ち：" + waits.joinToString("・")
+                        working.isEmpty() -> "✓ すべて済み"
+                        else -> ""
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(if (detail) "▾" else "▸", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+            }
+            if (detail) {
+                Text(
+                    status + (if (polishStatus.isNotEmpty()) "\n$polishStatus" else ""),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+            }
             busy?.let { Text(it, style = MaterialTheme.typography.labelSmall) }
             learned?.let { (segIndex, fixes) ->
                 LearnedBar(s, segIndex, fixes) { learned = null }
@@ -523,6 +558,33 @@ private fun RecordControls(s: Session, isRec: Boolean, otherRec: Boolean, live: 
     }
 }
 
+/** 作業中に動く、ペンで書いているような小さなアイコン */
+@Composable
+private fun WritingIcon() {
+    val t = androidx.compose.animation.core.rememberInfiniteTransition(label = "writing")
+    val x by t.animateFloat(
+        initialValue = -3f, targetValue = 3f,
+        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+            androidx.compose.animation.core.tween(450, easing = androidx.compose.animation.core.LinearEasing),
+            androidx.compose.animation.core.RepeatMode.Reverse,
+        ),
+        label = "x",
+    )
+    val r by t.animateFloat(
+        initialValue = -10f, targetValue = 10f,
+        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+            androidx.compose.animation.core.tween(220, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+            androidx.compose.animation.core.RepeatMode.Reverse,
+        ),
+        label = "r",
+    )
+    Text(
+        "✍",
+        fontSize = 16.sp,
+        modifier = Modifier.offset(x = x.dp).graphicsLayer { rotationZ = r },
+    )
+}
+
 /** 音の大きさ。ここだけが 0.1 秒ごとに描き直される */
 @Composable
 private fun LevelBar(modifier: Modifier) {
@@ -542,12 +604,12 @@ private fun LiveBlock(live: Live.State, @Suppress("UNUSED_PARAMETER") now: Long)
         style = MaterialTheme.typography.bodyLarge,
         color = MaterialTheme.colorScheme.outline,
         fontStyle = FontStyle.Italic,
-        modifier = Modifier.fillMaxWidth().padding(start = GUTTER, top = 7.dp, bottom = 7.dp),
+        modifier = Modifier.fillMaxWidth().padding(end = GUTTER, top = 7.dp, bottom = 7.dp),
     )
 }
 
-/** 左の余白（分の打刻を出す） */
-private val GUTTER = 38.dp
+/** 文章の右の余白（スクロールバーのすぐ左に、分の打刻を出す） */
+private val GUTTER = 34.dp
 
 /** 右端のスクロールバー。つまんで動かすと、その位置へ飛ぶ */
 @Composable
@@ -613,7 +675,7 @@ private fun ParaView(
         }
         if (run.isNotEmpty()) groups.add(run)
         for (gr in groups) {
-            if (gr is Segment) Box(Modifier.padding(start = GUTTER)) { editor(gr) }
+            if (gr is Segment) Box(Modifier.padding(end = GUTTER)) { editor(gr) }
             else {
                 @Suppress("UNCHECKED_CAST")
                 PiecesText(gr as List<Transcript.Piece>, onEdit, onMark)
@@ -676,23 +738,6 @@ private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment, Int) ->
     val (main, stamps) = built
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     Row(Modifier.fillMaxWidth()) {
-        // 左の余白：分の打刻を、その分が始まる行の高さに
-        Box(Modifier.width(GUTTER)) {
-            val l = layout
-            if (l != null) {
-                for ((off, label) in stamps) {
-                    val line = l.getLineForOffset(off.coerceIn(0, (main.first.length - 1).coerceAtLeast(0)))
-                    val top = with(density) { l.getLineTop(line).toDp() }
-                    Text(
-                        label,
-                        fontSize = 10.sp,
-                        color = cs.outline.copy(alpha = 0.7f),
-                        modifier = Modifier.offset(y = top + 4.dp),
-                        maxLines = 1,
-                    )
-                }
-            }
-        }
         Text(
             main.first,
             style = MaterialTheme.typography.bodyLarge,
@@ -725,6 +770,23 @@ private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment, Int) ->
                 )
             },
         )
+        // 右の余白：分の打刻を、その分が始まる行の高さに（スクロールバーのすぐ左）
+        Box(Modifier.width(GUTTER), contentAlignment = Alignment.TopEnd) {
+            val l = layout
+            if (l != null) {
+                for ((off, label) in stamps) {
+                    val line = l.getLineForOffset(off.coerceIn(0, (main.first.length - 1).coerceAtLeast(0)))
+                    val top = with(density) { l.getLineTop(line).toDp() }
+                    Text(
+                        label,
+                        fontSize = 10.sp,
+                        color = cs.outline.copy(alpha = 0.7f),
+                        modifier = Modifier.offset(y = top + 4.dp),
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
     }
 }
 

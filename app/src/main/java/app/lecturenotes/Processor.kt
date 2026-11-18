@@ -33,6 +33,10 @@ object Processor {
     /** 仕上げの状態（画面に出す） */
     val polishStatus = MutableStateFlow("")
 
+    /** いまの作業を短く（画面の下の動くアイコンの横に出す）。何もしていなければ null */
+    val activity = MutableStateFlow<String?>(null)
+    val polishActivity = MutableStateFlow<String?>(null)
+
     fun start(context: Context) {
         app = context.applicationContext
         app.getSystemService(ConnectivityManager::class.java)?.registerDefaultNetworkCallback(
@@ -57,7 +61,10 @@ object Processor {
                 status.value = "エラー: ${e.message?.take(120)}"
                 false
             }
-            if (!worked) withTimeoutOrNull(20_000) { wakeCh.receive() }
+            if (!worked) {
+                activity.value = null
+                withTimeoutOrNull(20_000) { wakeCh.receive() }
+            }
         }
     }
 
@@ -122,6 +129,7 @@ object Processor {
 
         if (online && Catalog.needsRefresh(app, settings)) {
             status.value = "使えるモデルを確かめています…"
+            activity.value = "準備中"
             Catalog.refresh(app, settings)
         }
 
@@ -159,6 +167,7 @@ object Processor {
             val wav = Repo.audioFile(s.id, seg)
             val m4a = java.io.File(wav.parentFile, wav.name.removeSuffix(".wav") + ".m4a")
             status.value = "音声を小さくしています（${s.title}）"
+            activity.value = "音声を圧縮中"
             try {
                 if (wav.exists()) Audio.wavToM4a(wav, m4a)
                 if (m4a.exists() && m4a.length() > 0) {
@@ -208,6 +217,7 @@ object Processor {
         val glossary = Glossary.load(app)
         for (c in usable(Role.STT)) {
             status.value = "${c.model} で文字起こし中（${fmtClock(seg.startMs)}）"
+            activity.value = "清書中"
             try {
                 val text = timed(c, Role.STT) { to ->
                     when (c.provider) {
@@ -306,6 +316,7 @@ object Processor {
 
         for (c in usable(Role.FAST)) {
             status.value = "${c.model} で整形中（${fmtClock(batch.first().startMs)}〜）"
+            activity.value = "整形中"
             try {
                 val out = timed(c, Role.FAST) { to ->
                     when (c.provider) {
@@ -369,7 +380,10 @@ object Processor {
                 polishStatus.value = "仕上げ: ${e.message?.take(120)}"
                 false
             }
-            if (!worked) withTimeoutOrNull(30_000) { polishWakeCh.receive() }
+            if (!worked) {
+                polishActivity.value = null
+                withTimeoutOrNull(30_000) { polishWakeCh.receive() }
+            }
         }
     }
 
@@ -411,6 +425,7 @@ object Processor {
             }
             for (c in cands) {
                 polishStatus.value = "${c.model} で仕上げ中（${fmtClock(batch.first().startMs)}〜）"
+                polishActivity.value = "仕上げ中"
                 try {
                     val out = timed(c, Role.POLISH) { to ->
                         when (c.provider) {
