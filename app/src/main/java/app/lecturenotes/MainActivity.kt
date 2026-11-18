@@ -95,6 +95,14 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.platform.LocalDensity
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -291,7 +299,12 @@ fun DetailScreen(id: String, onBack: () -> Unit, onSettings: () -> Unit) {
     }
 
     var menu by remember { mutableStateOf(false) }
-    var editing by remember { mutableStateOf<Int?>(null) }
+    /** 直している区間と、最初のカーソルの位置 */
+    var editing by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    /** 直している欄のカーソルの高さ（画面の中の位置） */
+    var editCursorY by remember { mutableStateOf<Float?>(null) }
+    var listTop by remember { mutableStateOf(0f) }
+    var listHeight by remember { mutableStateOf(0f) }
     var noteFor by remember { mutableStateOf<Long?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
@@ -365,15 +378,31 @@ fun DetailScreen(id: String, onBack: () -> Unit, onSettings: () -> Unit) {
         })
         HorizontalDivider()
 
-        LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp), state = listState) {
+        // キーボードが出て見える範囲が変わったら、カーソルの行を真ん中へ
+        LaunchedEffect(editing?.first, listHeight) {
+            if (editing == null) return@LaunchedEffect
+            delay(200)
+            val y = editCursorY ?: return@LaunchedEffect
+            listState.animateScrollBy(y - (listTop + listHeight / 2))
+        }
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+        LazyColumn(
+            Modifier.fillMaxSize().padding(start = 4.dp, end = 18.dp).onGloballyPositioned {
+                val b = it.boundsInWindow()
+                listTop = b.top
+                listHeight = b.height
+            },
+            state = listState,
+        ) {
             items(rows) { para ->
                 ParaView(
-                    para, editing,
-                    onEdit = { editing = it.index },
+                    para, editing?.first,
+                    onEdit = { g, cursor -> editCursorY = null; editing = g.index to cursor },
                     onMark = { Marker.toggleWhole(id, it.index) },
                 ) { g ->
                     InlineEditor(
-                        s, g,
+                        s, g, editing?.second ?: 0,
+                        onCursorY = { editCursorY = it },
                         onClose = { editing = null },
                         onLearned = { fixes -> learned = g.index to fixes },
                     )
@@ -385,6 +414,8 @@ fun DetailScreen(id: String, onBack: () -> Unit, onSettings: () -> Unit) {
             if (rows.isEmpty() && !isRec) {
                 item { Text("まだ録音がありません", color = MaterialTheme.colorScheme.outline, modifier = Modifier.padding(16.dp)) }
             }
+        }
+        Scrollbar(listState, Modifier.align(Alignment.CenterEnd))
         }
 
         HorizontalDivider()
@@ -511,8 +542,49 @@ private fun LiveBlock(live: Live.State, @Suppress("UNUSED_PARAMETER") now: Long)
         style = MaterialTheme.typography.bodyLarge,
         color = MaterialTheme.colorScheme.outline,
         fontStyle = FontStyle.Italic,
-        modifier = Modifier.fillMaxWidth().padding(vertical = 7.dp),
+        modifier = Modifier.fillMaxWidth().padding(start = GUTTER, top = 7.dp, bottom = 7.dp),
     )
+}
+
+/** 左の余白（分の打刻を出す） */
+private val GUTTER = 38.dp
+
+/** 右端のスクロールバー。つまんで動かすと、その位置へ飛ぶ */
+@Composable
+private fun Scrollbar(state: androidx.compose.foundation.lazy.LazyListState, modifier: Modifier) {
+    val scope = rememberCoroutineScope()
+    val color = MaterialTheme.colorScheme.outline
+    var heightPx by remember { mutableStateOf(1f) }
+    val info = state.layoutInfo
+    val total = info.totalItemsCount
+    if (total == 0) return
+    val visible = info.visibleItemsInfo
+    val firstSize = visible.firstOrNull()?.size?.coerceAtLeast(1) ?: 1
+    val pos = state.firstVisibleItemIndex + state.firstVisibleItemScrollOffset.toFloat() / firstSize
+    val shown = visible.size.coerceAtLeast(1)
+    val thumbFrac = (shown.toFloat() / total).coerceIn(0.06f, 1f)
+    val posFrac = if (total <= shown) 0f else (pos / (total - shown)).coerceIn(0f, 1f)
+    fun jump(y: Float) {
+        val f = (y / heightPx).coerceIn(0f, 1f)
+        scope.launch { state.scrollToItem((f * (total - 1)).toInt()) }
+    }
+    androidx.compose.foundation.Canvas(
+        modifier.fillMaxHeight().width(16.dp)
+            .onGloballyPositioned { heightPx = it.size.height.toFloat().coerceAtLeast(1f) }
+            .pointerInput(total) {
+                detectVerticalDragGestures(onDragStart = { jump(it.y) }) { change, _ -> jump(change.position.y) }
+            }
+            .pointerInput(total) { detectTapGestures { jump(it.y) } },
+    ) {
+        val w = 4.dp.toPx()
+        val x = size.width - w - 3.dp.toPx()
+        drawRoundRect(color.copy(alpha = 0.12f), topLeft = androidx.compose.ui.geometry.Offset(x, 0f),
+            size = androidx.compose.ui.geometry.Size(w, size.height), cornerRadius = androidx.compose.ui.geometry.CornerRadius(w / 2))
+        val th = size.height * thumbFrac
+        val ty = (size.height - th) * posFrac
+        drawRoundRect(color.copy(alpha = 0.55f), topLeft = androidx.compose.ui.geometry.Offset(x, ty),
+            size = androidx.compose.ui.geometry.Size(w, th), cornerRadius = androidx.compose.ui.geometry.CornerRadius(w / 2))
+    }
 }
 
 private val MARKER_COLOR = androidx.compose.ui.graphics.Color(0x80FFE14D)
@@ -522,7 +594,7 @@ private val MARKER_COLOR = androidx.compose.ui.graphics.Color(0x80FFE14D)
 private fun ParaView(
     para: Transcript.Para,
     editingIndex: Int?,
-    onEdit: (Segment) -> Unit,
+    onEdit: (Segment, Int) -> Unit,
     onMark: (Segment) -> Unit,
     editor: @Composable (Segment) -> Unit,
 ) {
@@ -541,7 +613,7 @@ private fun ParaView(
         }
         if (run.isNotEmpty()) groups.add(run)
         for (gr in groups) {
-            if (gr is Segment) editor(gr)
+            if (gr is Segment) Box(Modifier.padding(start = GUTTER)) { editor(gr) }
             else {
                 @Suppress("UNCHECKED_CAST")
                 PiecesText(gr as List<Transcript.Piece>, onEdit, onMark)
@@ -550,34 +622,33 @@ private fun ParaView(
     }
 }
 
+private data class SegRange(val start: Int, val end: Int, val seg: Segment, val text: String)
+
 @Composable
-private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment) -> Unit, onMark: (Segment) -> Unit) {
+private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment, Int) -> Unit, onMark: (Segment) -> Unit) {
     val haptic = LocalHapticFeedback.current
     val uri = LocalUriHandler.current
     val cs = MaterialTheme.colorScheme
+    val density = LocalDensity.current
     val built = remember(pieces, cs) {
-        val segRanges = ArrayList<Triple<Int, Int, Segment>>()
+        val segRanges = ArrayList<SegRange>()
         val urlRanges = ArrayList<Triple<Int, Int, String>>()
+        val stamps = ArrayList<Pair<Int, String>>() // 文字の位置と、分の打刻
         val text = buildAnnotatedString {
             for (p in pieces) {
                 val start = length
+                if (p.kind == Transcript.Kind.TIME) {
+                    stamps.add(start to p.text)
+                    continue
+                }
                 val style = when (p.kind) {
-                    Transcript.Kind.FINAL -> SpanStyle(color = cs.onSurface)
                     Transcript.Kind.RAW -> SpanStyle(color = cs.onSurfaceVariant)
                     Transcript.Kind.DRAFT -> SpanStyle(color = cs.outline, fontStyle = FontStyle.Italic)
                     Transcript.Kind.PENDING -> SpanStyle(color = cs.outline)
                     Transcript.Kind.MARK -> SpanStyle(color = cs.tertiary, fontWeight = FontWeight.Bold)
-                    Transcript.Kind.TIME -> SpanStyle(color = cs.outline.copy(alpha = 0.6f), fontSize = 10.sp)
+                    else -> SpanStyle(color = cs.onSurface)
                 }
-                withStyle(style) {
-                    append(
-                        when (p.kind) {
-                            Transcript.Kind.MARK -> " ${p.text} "
-                            Transcript.Kind.TIME -> "\u2009${p.text}\u2009"
-                            else -> p.text
-                        },
-                    )
-                }
+                withStyle(style) { append(if (p.kind == Transcript.Kind.MARK) " ${p.text} " else p.text) }
                 p.seg?.let { g ->
                     val bg = SpanStyle(background = MARKER_COLOR)
                     if (Marker.WHOLE in g.highlights) addStyle(bg, start, length)
@@ -591,50 +662,92 @@ private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment) -> Unit
                         }
                     }
                 }
-                if (p.kind != Transcript.Kind.MARK && p.kind != Transcript.Kind.TIME) {
+                if (p.kind != Transcript.Kind.MARK) {
                     for (r in Scripture.find(p.text)) {
                         addStyle(SpanStyle(color = cs.primary, textDecoration = TextDecoration.Underline), start + r.start, start + r.end)
                         urlRanges.add(Triple(start + r.start, start + r.end, Scripture.url(r.book, r.chapter)))
                     }
                 }
-                p.seg?.let { segRanges.add(Triple(start, length, it)) }
+                p.seg?.let { segRanges.add(SegRange(start, length, it, p.text)) }
             }
         }
-        Triple(text, segRanges, urlRanges)
+        Triple(text, segRanges, urlRanges) to stamps
     }
+    val (main, stamps) = built
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
-    Text(
-        built.first,
-        style = MaterialTheme.typography.bodyLarge,
-        onTextLayout = { layout = it },
-        modifier = Modifier.fillMaxWidth().pointerInput(built) {
-            fun segAt(pos: androidx.compose.ui.geometry.Offset): Segment? {
-                val off = layout?.getOffsetForPosition(pos) ?: return null
-                return (built.second.firstOrNull { off in it.first until it.second } ?: built.second.lastOrNull { it.first <= off })?.third
+    Row(Modifier.fillMaxWidth()) {
+        // 左の余白：分の打刻を、その分が始まる行の高さに
+        Box(Modifier.width(GUTTER)) {
+            val l = layout
+            if (l != null) {
+                for ((off, label) in stamps) {
+                    val line = l.getLineForOffset(off.coerceIn(0, (main.first.length - 1).coerceAtLeast(0)))
+                    val top = with(density) { l.getLineTop(line).toDp() }
+                    Text(
+                        label,
+                        fontSize = 10.sp,
+                        color = cs.outline.copy(alpha = 0.7f),
+                        modifier = Modifier.offset(y = top + 4.dp),
+                        maxLines = 1,
+                    )
+                }
             }
-            detectTapGestures(
-                onLongPress = { pos ->
-                    segAt(pos)?.let {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onMark(it)
-                    }
-                },
-                onTap = { pos ->
-                    val off = layout?.getOffsetForPosition(pos)
-                    val url = off?.let { o -> built.third.firstOrNull { o in it.first until it.second } }
-                    if (url != null) uri.openUri(url.third) else segAt(pos)?.let { onEdit(it) }
-                },
-            )
-        },
-    )
+        }
+        Text(
+            main.first,
+            style = MaterialTheme.typography.bodyLarge,
+            onTextLayout = { layout = it },
+            modifier = Modifier.weight(1f).pointerInput(main) {
+                fun rangeAt(off: Int): SegRange? =
+                    main.second.firstOrNull { off in it.start until it.end } ?: main.second.lastOrNull { it.start <= off }
+                detectTapGestures(
+                    onLongPress = { pos ->
+                        val off = layout?.getOffsetForPosition(pos) ?: return@detectTapGestures
+                        rangeAt(off)?.let {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onMark(it.seg)
+                        }
+                    },
+                    onTap = { pos ->
+                        val off = layout?.getOffsetForPosition(pos) ?: return@detectTapGestures
+                        val url = main.third.firstOrNull { off in it.first until it.second }
+                        if (url != null) {
+                            uri.openUri(url.third)
+                            return@detectTapGestures
+                        }
+                        val r = rangeAt(off) ?: return@detectTapGestures
+                        // 押した文字の位置 → 区間の文の中の位置（カーソルをそこに置く）
+                        val full = displayText(r.seg) ?: ""
+                        val base = full.indexOf(r.text).coerceAtLeast(0)
+                        val inPiece = (off - r.start).coerceIn(0, r.text.length)
+                        onEdit(r.seg, (base + inPiece).coerceIn(0, full.length))
+                    },
+                )
+            },
+        )
+    }
 }
 
 /** 文章の中でそのまま直す入力欄 */
 @Composable
-private fun InlineEditor(s: Session, g: Segment, onClose: () -> Unit, onLearned: (List<Corrections.Fix>) -> Unit) {
+private fun InlineEditor(
+    s: Session, g: Segment, cursor: Int,
+    onCursorY: (Float) -> Unit,
+    onClose: () -> Unit, onLearned: (List<Corrections.Fix>) -> Unit,
+) {
     val cs = MaterialTheme.colorScheme
     val before = remember(g.index) { displayText(g) ?: "" }
-    var field by remember(g.index) { mutableStateOf(TextFieldValue(before, androidx.compose.ui.text.TextRange(before.length))) }
+    var field by remember(g.index) {
+        mutableStateOf(TextFieldValue(before, androidx.compose.ui.text.TextRange(cursor.coerceIn(0, before.length))))
+    }
+    var textLayout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    var fieldTop by remember { mutableStateOf<Float?>(null) }
+    LaunchedEffect(field.selection, textLayout, fieldTop) {
+        val tl = textLayout ?: return@LaunchedEffect
+        val top = fieldTop ?: return@LaunchedEffect
+        val c = field.selection.end.coerceIn(0, field.text.length)
+        onCursorY(top + tl.getCursorRect(c).center.y)
+    }
     var more by remember { mutableStateOf(false) }
     var showRaw by remember { mutableStateOf(false) }
     val focus = remember { FocusRequester() }
@@ -664,7 +777,9 @@ private fun InlineEditor(s: Session, g: Segment, onClose: () -> Unit, onLearned:
             onValueChange = { field = it },
             textStyle = MaterialTheme.typography.bodyLarge.copy(color = cs.onSurface),
             cursorBrush = SolidColor(cs.primary),
-            modifier = Modifier.fillMaxWidth().focusRequester(focus),
+            onTextLayout = { textLayout = it },
+            modifier = Modifier.fillMaxWidth().focusRequester(focus)
+                .onGloballyPositioned { fieldTop = it.positionInWindow().y },
         )
         FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             val sel = field.selection
