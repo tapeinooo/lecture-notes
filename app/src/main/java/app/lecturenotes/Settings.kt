@@ -56,8 +56,12 @@ class Settings(context: Context) {
     /** 音声を区切る目安の長さ（秒）。この長さを過ぎたら、話の切れ目で区切る */
     var chunkSeconds by int("chunkSec2", 15)
 
-    /** すぐの整形を何区間ずつまとめるか */
-    var formatBatch by int("fastBatch", 2)
+    /**
+     * すぐの整形のタイミング。
+     * 話に長めの間（2秒）があり、たまった音声が fastMinSec 以上なら整形する。間がなくても fastMaxSec たったら整形する。
+     */
+    var fastMinSec by int("fastMinSec", 15)
+    var fastMaxSec by int("fastMaxSec", 45)
 
     var formatEnabled by bool("formatEnabled", true)
 

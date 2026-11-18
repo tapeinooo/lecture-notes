@@ -187,7 +187,6 @@ object Live {
         val startedAt: Long = 0,
         /** 記録の中での、録音を始めた位置（続きから録るとき 0 より大きい） */
         val baseMs: Long = 0,
-        val level: Float = 0f,
         /** 端末内の文字起こしの途中結果 */
         val partial: String = "",
         /** いまの区間で確定した文字（端末内） */
@@ -202,4 +201,10 @@ object Live {
     }
 
     val state = MutableStateFlow(State())
+
+    /** 音の大きさ（0〜1）。0.1 秒ごとに変わるので、画面全体を描き直さないよう別にしている */
+    val level = MutableStateFlow(0f)
+
+    /** 最後に声がした時刻（端末の時計）。長めの間を整形のきっかけにする */
+    @Volatile var lastVoiceAt: Long = 0L
 }

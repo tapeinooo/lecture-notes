@@ -258,37 +258,51 @@ object Processor {
 
     // ---------- 整形 ----------
 
-    /** 整形する区間のまとまり。まだそろっていなければ null */
+    /** 話に長めの間があるか（録音中） */
+    private fun inLongPause(): Boolean {
+        val t = Live.lastVoiceAt
+        return t > 0 && System.currentTimeMillis() - t >= 1_800
+    }
+
+    /**
+     * すぐの整形をするまとまり。まだ待つなら null。
+     *  - 録音中：長めの間があって、たまった音声が fastMinSec 以上 → 整形。間がなくても fastMaxSec 以上 → 整形。
+     *    （1回あたりの量をある程度まとめて、呼び出しの回数とトークンを抑える）
+     *  - 録音していない：残りをまとめて（最大 120 秒分）。
+     */
     private fun pickBatch(s: Session): List<Segment>? {
+        val st = settings
         val segs = s.segments
         val first = segs.indexOfFirst { !it.silent && it.edited == null && it.formatted == null && !it.raw.isNullOrBlank() && !needsStt(it) }
         if (first < 0) return null
         val batch = ArrayList<Segment>()
+        val maxMs = (if (s.recording) st.fastMaxSec.coerceIn(15, 180) else 120) * 1000L
+        var blocked = false
         for (i in first until segs.size) {
             val g = segs[i]
             if (g.silent || g.rawEngine == "error") continue
-            if (needsStt(g) || g.raw == null) break
+            if (needsStt(g) || g.raw == null) { blocked = true; break }
             if (g.formatted != null || g.edited != null) break
             if (g.raw.isBlank()) continue
             batch.add(g)
-            // 録音中はすぐ出すため少しずつ、録音が終わっていればまとめて
-            val size = if (s.recording) settings.formatBatch.coerceIn(1, 20) else maxOf(settings.formatBatch, 6)
-            if (batch.size >= size) return batch
+            if (batch.last().endMs - batch.first().startMs >= maxMs) return batch
         }
         if (batch.isEmpty()) return null
-        // 録音中は、決まった数たまるまで待つ。録音が終わっていれば残りも整形する
-        // （文字起こし待ちの区間で止まったときも、録音が終わっていれば先にできた分を整形する）
-        if (s.recording) return null
-        return batch
+        if (!s.recording) return batch
+        val durMs = batch.last().endMs - batch.first().startMs
+        val minMs = st.fastMinSec.coerceIn(5, 120) * 1000L
+        // 長めの間：清書がそろっている（次が清書待ちでない）ときだけ
+        if (!blocked && inLongPause() && durMs >= minMs) return batch
+        return null
     }
 
     private fun format(s: Session, batch: List<Segment>): Outcome {
         val glossary = Glossary.load(app)
         val firstIdx = s.segments.indexOfFirst { it.index == batch.first().index }
         val context = s.segments.take(firstIdx.coerceAtLeast(0))
-            .mapNotNull { displayText(it) }.joinToString("").takeLast(400)
-        val system = Prompts.formatSystem(glossary, s)
-        val user = Prompts.formatUser(context, batch.map { it.raw ?: "" }, Marker.keep(batch))
+            .mapNotNull { displayText(it) }.joinToString("").takeLast(300)
+        val system = Prompts.formatSystem(glossary, compact = true)
+        val user = Prompts.formatUser(context, batch.map { it.raw ?: "" }, Marker.keep(batch), s)
 
         for (c in usable(Role.FAST)) {
             status.value = "${c.model} で整形中（${fmtClock(batch.first().startMs)}〜）"
@@ -388,8 +402,8 @@ object Processor {
             val firstIdx = s.segments.indexOfFirst { it.index == batch.first().index }
             val context = s.segments.take(firstIdx.coerceAtLeast(0))
                 .mapNotNull { displayText(it) }.joinToString("").takeLast(800)
-            val system = Prompts.formatSystem(glossary, s)
-            val user = Prompts.formatUser(context, batch.map { it.raw ?: "" }, Marker.keep(batch))
+            val system = Prompts.formatSystem(glossary, compact = false)
+            val user = Prompts.formatUser(context, batch.map { it.raw ?: "" }, Marker.keep(batch), s)
             val cands = usable(Role.POLISH)
             if (cands.isEmpty()) {
                 polishStatus.value = "仕上げ：使えるモデルが休み中"
@@ -477,7 +491,12 @@ ${corrections(s)}
 出力は書き起こした本文だけにしてください。
 """.trim()
 
-    fun formatSystem(glossary: String, s: Session) = """
+    /**
+     * 整形の決まった部分。記録ごとに変わるもの（直した語・例・マーカー）は入れない
+     * （毎回同じ先頭部分にすると、Gemini が自動でキャッシュして、トークンの消費と待ち時間が減る）。
+     * compact = true（すぐの整形）は用語集を短くする。
+     */
+    fun formatSystem(glossary: String, compact: Boolean) = """
 あなたは日本語の講演の書き起こしを整える編集者です。講演はエホバの証人の集会・大会のものです。
 
 規則：
@@ -495,13 +514,14 @@ ${corrections(s)}
 12. 出力は JSON だけ：{"segments":["…","…"]}
 
 用語集（「誤→正」は直し方の例）：
-${Glossary.forPrompt(glossary)}
-${corrections(s)}${examples(s)}
+${if (compact) Glossary.forPromptCompact(glossary) else Glossary.forPrompt(glossary)}
 """.trim()
 
-    fun formatUser(context: String, raws: List<String>, keep: List<String> = emptyList()): String {
+    fun formatUser(context: String, raws: List<String>, keep: List<String>, s: Session): String {
         val input = JSONObject().put("segments", JSONArray(raws)).toString()
         return buildString {
+            append(corrections(s))
+            append(examples(s))
             if (keep.isNotEmpty()) {
                 append("利用者がマーカーを引いた語句（この言い回しのまま残す）：\n")
                 append(keep.joinToString("\n") { "・$it" })

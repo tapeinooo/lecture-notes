@@ -34,6 +34,20 @@ object Glossary {
     /** AI に渡す形 */
     fun forPrompt(text: String): String = entries(text).joinToString("\n")
 
+    /** 短くした形（すぐの整形用）：「誤→正」を全部と、用語を決まった長さまで */
+    fun forPromptCompact(text: String, maxChars: Int = 1200): String {
+        val e = entries(text)
+        val fixes = e.filter { it.contains('→') || it.contains('＞') }
+        val terms = e.filter { !it.contains('→') && !it.contains('＞') }
+        val sb = StringBuilder(fixes.joinToString("\n"))
+        for (t in terms) {
+            if (sb.length + t.length + 1 > maxChars) break
+            if (sb.isNotEmpty()) sb.append('\n')
+            sb.append(t)
+        }
+        return sb.toString()
+    }
+
     /** Whisper の prompt（語彙のヒント。長すぎると効かないので短く） */
     fun whisperPrompt(text: String, maxChars: Int = 180): String {
         val sb = StringBuilder()

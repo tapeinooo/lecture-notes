@@ -34,6 +34,7 @@ object Export {
                 when (pc.kind) {
                     Transcript.Kind.MARK -> " **【★ ${fmtClock(pc.mark?.timeMs ?: 0)} ${pc.mark?.note ?: ""}】** "
                     Transcript.Kind.PENDING -> "…"
+                    Transcript.Kind.TIME -> ""
                     else -> {
                         val g = pc.seg
                         if (g == null || g.highlights.isEmpty()) pc.text

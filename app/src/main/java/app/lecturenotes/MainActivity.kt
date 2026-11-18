@@ -94,6 +94,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -115,15 +116,15 @@ class MainActivity : ComponentActivity() {
 sealed interface Screen {
     data object Home : Screen
     data class Detail(val id: String) : Screen
-    data object Config : Screen
-    data object GlossaryEdit : Screen
+    /** 設定。back は戻る先（録音中の画面から開いたら、そこへ戻る） */
+    data class Config(val back: Screen) : Screen
+    data class GlossaryEdit(val back: Config) : Screen
 }
 
 @Composable
 fun AppRoot() {
     val context = LocalContext.current
-    val live by Live.state.collectAsState()
-    var screen by remember { mutableStateOf<Screen>(live.sessionId?.let { Screen.Detail(it) } ?: Screen.Home) }
+    var screen by remember { mutableStateOf<Screen>(Live.state.value.sessionId?.let { Screen.Detail(it) } ?: Screen.Home) }
 
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {}
     LaunchedEffect(Unit) {
@@ -136,15 +137,19 @@ fun AppRoot() {
     }
 
     BackHandler(enabled = screen != Screen.Home) {
-        screen = if (screen == Screen.GlossaryEdit) Screen.Config else Screen.Home
+        screen = when (val s = screen) {
+            is Screen.GlossaryEdit -> s.back
+            is Screen.Config -> s.back
+            else -> Screen.Home
+        }
     }
 
     Box(Modifier.fillMaxSize().safeDrawingPadding()) {
         when (val s = screen) {
-            Screen.Home -> HomeScreen(onOpen = { screen = Screen.Detail(it) }, onSettings = { screen = Screen.Config })
-            is Screen.Detail -> DetailScreen(s.id, onBack = { screen = Screen.Home })
-            Screen.Config -> SettingsScreen(onBack = { screen = Screen.Home }, onGlossary = { screen = Screen.GlossaryEdit })
-            Screen.GlossaryEdit -> GlossaryScreen(onBack = { screen = Screen.Config })
+            Screen.Home -> HomeScreen(onOpen = { screen = Screen.Detail(it) }, onSettings = { screen = Screen.Config(Screen.Home) })
+            is Screen.Detail -> DetailScreen(s.id, onBack = { screen = Screen.Home }, onSettings = { screen = Screen.Config(s) })
+            is Screen.Config -> SettingsScreen(onBack = { screen = s.back }, onGlossary = { screen = Screen.GlossaryEdit(s) })
+            is Screen.GlossaryEdit -> GlossaryScreen(onBack = { screen = s.back })
         }
     }
 }
@@ -262,7 +267,7 @@ private fun UpdateBanner() {
 // ---------------- 記録 ----------------
 
 @Composable
-fun DetailScreen(id: String, onBack: () -> Unit) {
+fun DetailScreen(id: String, onBack: () -> Unit, onSettings: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val sessions by Repo.sessions.collectAsState()
@@ -311,6 +316,7 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
 
     Column(Modifier.fillMaxSize()) {
         Header(s.title, onBack) {
+            TextButton(onClick = onSettings, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("⚙", fontSize = 22.sp) }
             Box {
                 TextButton(onClick = { menu = true }) { Text("…") }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -352,6 +358,13 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
             }
         }
 
+        RecordControls(s, isRec, otherRec, live, now, onMark = {
+            val t = live.elapsedMs()
+            Repo.update(id) { it.copy(marks = it.marks + Mark(t, "")) }
+            noteFor = t
+        })
+        HorizontalDivider()
+
         LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp), state = listState) {
             items(rows) { para ->
                 ParaView(
@@ -375,7 +388,7 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
         }
 
         HorizontalDivider()
-        Column(Modifier.fillMaxWidth().padding(12.dp)) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
             val p = Processor.pendingCounts(s)
             Text(
                 "清書待ち ${p.stt}・整形待ち ${p.fast}・仕上げ待ち ${p.polish}　$status" +
@@ -392,40 +405,6 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
                     Repo.update(id) { ss -> ss.copy(marks = ss.marks.map { if (it.timeMs == t) it.copy(note = note) else it }) }
                     noteFor = null
                 }, onClose = { noteFor = null })
-            }
-            if (isRec) {
-                live.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("● ${fmtClock(live.elapsedMs(now))}", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.width(8.dp))
-                    LinearProgressIndicator(progress = { live.level }, modifier = Modifier.weight(1f))
-                    Spacer(Modifier.width(8.dp))
-                    Text(live.engine, style = MaterialTheme.typography.labelSmall)
-                }
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = {
-                            val t = live.elapsedMs()
-                            Repo.update(id) { it.copy(marks = it.marks + Mark(t, "")) }
-                            noteFor = t
-                        },
-                        modifier = Modifier.weight(1f).height(56.dp),
-                    ) { Text("★ 印を付ける") }
-                    Button(
-                        onClick = { RecorderService.stop(context) },
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                        modifier = Modifier.weight(1f).height(56.dp),
-                    ) { Text("停止") }
-                }
-            } else {
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = { RecorderService.start(context, id) },
-                    enabled = !otherRec,
-                    modifier = Modifier.fillMaxWidth().height(56.dp),
-                ) { Text(if (s.segments.isEmpty()) "録音を始める" else "続きを録音する") }
-                if (otherRec) Text("ほかの記録を録音中です", style = MaterialTheme.typography.labelSmall)
             }
         }
     }
@@ -466,27 +445,74 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
     }
 }
 
-/** 録音中の、まだ区切られていない部分 */
+/** 画面の上の録音の操作。停止は押し間違えないよう、2回押して止める */
 @Composable
-private fun LiveBlock(live: Live.State, now: Long) {
-    val sec = if (live.chunkStartedAt > 0) ((now - live.chunkStartedAt) / 1000).coerceAtLeast(0) else 0
-    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-        Text(
-            "● 聞き取り中（${sec}秒）",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.error,
-        )
-        val text = (live.liveText + " " + live.partial).trim()
-        if (text.isNotEmpty()) {
-            Text(text, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.outline, fontStyle = FontStyle.Italic)
-        } else {
-            Text(
-                "…",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.outline,
-            )
+private fun RecordControls(s: Session, isRec: Boolean, otherRec: Boolean, live: Live.State, now: Long, onMark: () -> Unit) {
+    val context = LocalContext.current
+    var stopArmed by remember { mutableStateOf(false) }
+    LaunchedEffect(stopArmed) {
+        if (stopArmed) {
+            delay(3000)
+            stopArmed = false
         }
     }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+        if (isRec) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("● ${fmtClock(live.elapsedMs(now))}", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.width(8.dp))
+                LevelBar(Modifier.weight(1f))
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(onClick = onMark, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("★") }
+                Spacer(Modifier.width(6.dp))
+                Button(
+                    onClick = {
+                        if (stopArmed) {
+                            stopArmed = false
+                            RecorderService.stop(context)
+                        } else stopArmed = true
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (stopArmed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.errorContainer,
+                        contentColor = if (stopArmed) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onErrorContainer,
+                    ),
+                    contentPadding = PaddingValues(horizontal = 12.dp),
+                ) { Text(if (stopArmed) "もう一度で停止" else "停止") }
+            }
+            Text(live.engine, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+            live.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+        } else {
+            Button(
+                onClick = { RecorderService.start(context, s.id) },
+                enabled = !otherRec,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(if (s.segments.isEmpty()) "● 録音を始める" else "● 続きを録音する") }
+            if (otherRec) Text("ほかの記録を録音中です", style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+/** 音の大きさ。ここだけが 0.1 秒ごとに描き直される */
+@Composable
+private fun LevelBar(modifier: Modifier) {
+    val level by Live.level.collectAsState()
+    LinearProgressIndicator(progress = { level }, modifier = modifier)
+}
+
+/** 録音中の、まだ区切られていない部分（端末内の仮の文字を、文章の続きとして薄く出す） */
+@Composable
+private fun LiveBlock(live: Live.State, @Suppress("UNUSED_PARAMETER") now: Long) {
+    val text = (live.liveText + " " + live.partial).trim()
+    Text(
+        buildAnnotatedString {
+            withStyle(SpanStyle(color = MaterialTheme.colorScheme.error, fontSize = 10.sp)) { append("● ") }
+            append(text.ifEmpty { "…" })
+        },
+        style = MaterialTheme.typography.bodyLarge,
+        color = MaterialTheme.colorScheme.outline,
+        fontStyle = FontStyle.Italic,
+        modifier = Modifier.fillMaxWidth().padding(vertical = 7.dp),
+    )
 }
 
 private val MARKER_COLOR = androidx.compose.ui.graphics.Color(0x80FFE14D)
@@ -500,8 +526,7 @@ private fun ParaView(
     onMark: (Segment) -> Unit,
     editor: @Composable (Segment) -> Unit,
 ) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-        Text(fmtClock(para.startMs), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+    Column(Modifier.fillMaxWidth().padding(vertical = 7.dp)) {
         // 直している区間のところで文を分け、その区間だけ入力欄にする
         val groups = ArrayList<Any>() // List<Piece> か Segment（入力欄）
         var run = ArrayList<Transcript.Piece>()
@@ -542,8 +567,17 @@ private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment) -> Unit
                     Transcript.Kind.DRAFT -> SpanStyle(color = cs.outline, fontStyle = FontStyle.Italic)
                     Transcript.Kind.PENDING -> SpanStyle(color = cs.outline)
                     Transcript.Kind.MARK -> SpanStyle(color = cs.tertiary, fontWeight = FontWeight.Bold)
+                    Transcript.Kind.TIME -> SpanStyle(color = cs.outline.copy(alpha = 0.6f), fontSize = 10.sp)
                 }
-                withStyle(style) { append(if (p.kind == Transcript.Kind.MARK) " ${p.text} " else p.text) }
+                withStyle(style) {
+                    append(
+                        when (p.kind) {
+                            Transcript.Kind.MARK -> " ${p.text} "
+                            Transcript.Kind.TIME -> "\u2009${p.text}\u2009"
+                            else -> p.text
+                        },
+                    )
+                }
                 p.seg?.let { g ->
                     val bg = SpanStyle(background = MARKER_COLOR)
                     if (Marker.WHOLE in g.highlights) addStyle(bg, start, length)
@@ -557,7 +591,7 @@ private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment) -> Unit
                         }
                     }
                 }
-                if (p.kind != Transcript.Kind.MARK) {
+                if (p.kind != Transcript.Kind.MARK && p.kind != Transcript.Kind.TIME) {
                     for (r in Scripture.find(p.text)) {
                         addStyle(SpanStyle(color = cs.primary, textDecoration = TextDecoration.Underline), start + r.start, start + r.end)
                         urlRanges.add(Triple(start + r.start, start + r.end, Scripture.url(r.book, r.chapter)))
@@ -758,7 +792,8 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
     var catalogMsg by remember { mutableStateOf("") }
     var tick by remember { mutableStateOf(0) }
     var chunk by remember { mutableStateOf(st.chunkSeconds.toString()) }
-    var batch by remember { mutableStateOf(st.formatBatch.toString()) }
+    var fastMin by remember { mutableStateOf(st.fastMinSec.toString()) }
+    var fastMax by remember { mutableStateOf(st.fastMaxSec.toString()) }
     var formatOn by remember { mutableStateOf(st.formatEnabled) }
     var showKeys by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf("") }
@@ -862,8 +897,18 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
                 Switch(checked = polishOn, onCheckedChange = { polishOn = it; st.polishEnabled = it; Processor.wake() })
                 Text("頭の良いモデルで仕上げ直す", Modifier.padding(start = 8.dp))
             }
-            Field("すぐの整形を何区間ずつまとめるか", batch, KeyboardType.Number) {
-                batch = it; it.toIntOrNull()?.let { v -> st.formatBatch = v.coerceIn(1, 20) }
+            Text(
+                "すぐの整形は、話に長めの間（2秒ほど）があったときに、たまった分をまとめて行います。間がなくても決まった秒数たてば行います。" +
+                    "まとめるほど呼び出しの回数とトークンが減り、無料枠が長持ちします。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
+            Field("間で整形するのは、たまった音声が何秒以上のとき", fastMin, KeyboardType.Number) {
+                fastMin = it; it.toIntOrNull()?.let { v -> st.fastMinSec = v.coerceIn(5, 120) }
+            }
+            Field("間がなくても整形するまでの秒数", fastMax, KeyboardType.Number) {
+                fastMax = it; it.toIntOrNull()?.let { v -> st.fastMaxSec = v.coerceIn(15, 180) }
+            }
             }
 
             Section("その場の表示")
@@ -876,11 +921,11 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.outline,
             )
-            Field("清書に送る区切りの目安（秒・5〜120）", chunk, KeyboardType.Number) {
-                chunk = it; it.toIntOrNull()?.let { v -> st.chunkSeconds = v.coerceIn(5, 120) }
+            Field("清書に送る区切りの目安（秒・10〜120）", chunk, KeyboardType.Number) {
+                chunk = it; it.toIntOrNull()?.let { v -> st.chunkSeconds = v.coerceIn(10, 120) }
             }
             Text(
-                "短いほど清書が早く出ますが、無料枠の回数を多く使います。目安を過ぎたら話の切れ目で区切ります。",
+                "10秒を過ぎたら文の切れ目（0.6秒ほどの間）で区切り、目安を過ぎたら少しでも静かなところで区切ります。短いほど清書が早く出ますが、無料枠の回数を多く使います。録音中に変えても、次の区切りから効きます。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.outline,
             )

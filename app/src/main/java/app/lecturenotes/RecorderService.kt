@@ -182,8 +182,12 @@ class RecorderService : Service() {
         var index = (session.segments.maxOfOrNull { it.index } ?: 0) + 1
 
         while (running) {
-            // 目安の長さを過ぎたら、話の切れ目（静かな 0.1 秒）で区切る。切れ目がなければ 1.5 倍で区切る
-            val targetSamples = settings.chunkSeconds.coerceIn(5, 120) * SAMPLE_RATE
+            // 区切り方（清書に送る単位）
+            //  ・10秒を過ぎたら、0.6秒以上の間（文の切れ目）で区切る（Groq は1回10秒分として数えるので、それより短くしない）
+            //  ・目安の長さを過ぎたら、少しでも静かなところで区切る
+            //  ・切れ目がなければ目安の1.5倍で区切る
+            val targetSamples = settings.chunkSeconds.coerceIn(10, 120) * SAMPLE_RATE
+            val minSamples = minOf(10 * SAMPLE_RATE, targetSamples)
             val maxSamples = targetSamples * 3 / 2
             val writer = Audio.newChunk(Repo.audioDir(id), index)
             val name = writer.file.name
@@ -191,6 +195,7 @@ class RecorderService : Service() {
             var loudFrames = 0
             var frames = 0
             var rmsSum = 0.0
+            var quietRun = 0
             synchronized(localText) { localText.setLength(0) }
             Live.state.update { it.copy(liveText = "", chunkStartedAt = System.currentTimeMillis()) }
 
@@ -206,11 +211,16 @@ class RecorderService : Service() {
                 frames++
                 rmsSum += rms
                 if (rms > 250) loudFrames++
-                Live.state.update { it.copy(level = (rms / 4000.0).coerceIn(0.0, 1.0).toFloat()) }
-                if (samples >= targetSamples) {
-                    val avg = rmsSum / frames
-                    if (rms < maxOf(150.0, avg * 0.35)) break
+                Live.level.value = (rms / 4000.0).coerceIn(0.0, 1.0).toFloat()
+                val quiet = rms < maxOf(150.0, rmsSum / frames * 0.35)
+                if (quiet) quietRun++ else {
+                    quietRun = 0
+                    Live.lastVoiceAt = System.currentTimeMillis()
                 }
+                // 長めの間（2秒）に入ったら、整形を急がせる
+                if (quietRun == 20) Processor.wake()
+                if (samples >= minSamples && quietRun >= 6) break
+                if (samples >= targetSamples && quiet) break
             }
             runCatching { writer.close() }
 
