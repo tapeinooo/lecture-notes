@@ -179,6 +179,10 @@ class RecorderService : Service() {
 
         val session = Repo.get(id) ?: return
         var startMs = session.durationMs
+        // 声の変わり目（段落を区切る参考にする）
+        val voice = VoiceChangeDetector { at ->
+            Repo.update(id) { it.copy(voiceChanges = (it.voiceChanges + at).sorted()) }
+        }
         var index = (session.segments.maxOfOrNull { it.index } ?: 0) + 1
 
         while (running) {
@@ -210,6 +214,7 @@ class RecorderService : Service() {
                 val rms = sqrt(sum / n)
                 frames++
                 rmsSum += rms
+                if (settings.voiceChangeHints) voice.feed(buf, n, rms, startMs + (samples - n) * 1000L / SAMPLE_RATE)
                 if (rms > 250) loudFrames++
                 Live.level.value = (rms / 4000.0).coerceIn(0.0, 1.0).toFloat()
                 val quiet = rms < maxOf(150.0, rmsSum / frames * 0.35)

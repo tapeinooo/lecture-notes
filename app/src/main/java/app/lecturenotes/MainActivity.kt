@@ -1090,6 +1090,7 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
     var manualPolish by remember { mutableStateOf(st.manualPolish) }
     var polishOn by remember { mutableStateOf(st.polishEnabled) }
     var liveOn by remember { mutableStateOf(st.livePreview) }
+    var voiceOn by remember { mutableStateOf(st.voiceChangeHints) }
     var catalogMsg by remember { mutableStateOf("") }
     var tick by remember { mutableStateOf(0) }
     var chunk by remember { mutableStateOf(st.chunkSeconds.toString()) }
@@ -1218,6 +1219,15 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
             }
             Text(
                 "話した直後に文字が出ます（Android 13 以上）。区切りごとにクラウドの清書で置き換わります。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = voiceOn, onCheckedChange = { voiceOn = it; st.voiceChangeHints = it })
+                Text("声の変わり目を、段落を区切る参考にする", Modifier.padding(start = 8.dp))
+            }
+            Text(
+                "端末の中で声の高さと響きを比べ、話し手が替わったらしいところを AI に伝えます（ネット・無料枠は使いません）。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.outline,
             )

@@ -49,6 +49,8 @@ data class Session(
     val speaker: String = "",
     /** ラベル（集会・講演・大会・その他 など） */
     val labels: List<String> = emptyList(),
+    /** 声が変わったらしい時刻（記録の中のミリ秒）。段落を区切る参考 */
+    val voiceChanges: List<Long> = emptyList(),
 ) {
     val durationMs: Long get() = segments.lastOrNull()?.endMs ?: 0L
 }
@@ -123,6 +125,7 @@ object Repo {
         put("durationMs", s.durationMs)
         put("speaker", s.speaker)
         put("labels", JSONArray(s.labels))
+        put("voiceChanges", JSONArray(s.voiceChanges))
         put("recording", s.recording)
         put("segments", JSONArray().apply {
             s.segments.forEach { g ->
@@ -186,6 +189,7 @@ object Repo {
             corrections = j.optJSONArray("corrections")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList(),
             speaker = j.optString("speaker"),
             labels = j.optJSONArray("labels")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList(),
+            voiceChanges = j.optJSONArray("voiceChanges")?.let { a -> (0 until a.length()).map { a.getLong(it) } } ?: emptyList(),
         )
     }
 }

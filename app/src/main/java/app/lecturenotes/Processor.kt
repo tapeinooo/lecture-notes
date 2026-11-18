@@ -268,6 +268,16 @@ object Processor {
 
     // ---------- 整形 ----------
 
+    /** 声が変わったらしい位置を、整形の AI に渡す形にする（区間の番号は 1 から） */
+    private fun voiceHints(s: Session, batch: List<Segment>): List<String> {
+        if (!settings.voiceChangeHints) return emptyList()
+        return batch.mapIndexedNotNull { i, g ->
+            val t = s.voiceChanges.firstOrNull { it >= g.startMs - 1500 && it < g.endMs } ?: return@mapIndexedNotNull null
+            val off = t - g.startMs
+            if (off < 3000) "区間${i + 1}の先頭付近" else "区間${i + 1}の途中（約${off / 1000}秒目）"
+        }
+    }
+
     /** 話に長めの間があるか（録音中） */
     private fun inLongPause(): Boolean {
         val t = Live.lastVoiceAt
@@ -312,7 +322,7 @@ object Processor {
         val context = s.segments.take(firstIdx.coerceAtLeast(0))
             .mapNotNull { displayText(it) }.joinToString("").takeLast(300)
         val system = Prompts.formatSystem(glossary, compact = true)
-        val user = Prompts.formatUser(context, batch.map { it.raw ?: "" }, Marker.keep(batch), s)
+        val user = Prompts.formatUser(context, batch.map { it.raw ?: "" }, Marker.keep(batch), s, voiceHints(s, batch))
 
         for (c in usable(Role.FAST)) {
             status.value = "${c.model} で整形中（${fmtClock(batch.first().startMs)}〜）"
@@ -417,7 +427,7 @@ object Processor {
             val context = s.segments.take(firstIdx.coerceAtLeast(0))
                 .mapNotNull { displayText(it) }.joinToString("").takeLast(800)
             val system = Prompts.formatSystem(glossary, compact = false)
-            val user = Prompts.formatUser(context, batch.map { it.raw ?: "" }, Marker.keep(batch), s)
+            val user = Prompts.formatUser(context, batch.map { it.raw ?: "" }, Marker.keep(batch), s, voiceHints(s, batch))
             val cands = usable(Role.POLISH)
             if (cands.isEmpty()) {
                 polishStatus.value = "仕上げ：使えるモデルが休み中"
@@ -526,17 +536,23 @@ ${corrections(s)}
 9. 区間の境目で文が切れていても、そのままにしてください（前後の区間に文を動かさない）。
 10. 段落：話題が変わるところ、聖句の朗読の前後、問いかけの前などで新しい段落にします。新しい段落を始める位置に空行（\n\n）を入れてください（区間の先頭でも途中でもよい）。段落は長くしすぎず、目安は200〜400字です。直前の内容の最後の段落がすでに長ければ、早めに区切ってください。
 11. 利用者が直した語・例があれば、それに従い、同じ書き方にそろえてください。
+11-2. 入力に「声が変わった可能性のある位置」があれば、そこを段落の区切りの有力な候補にしてください（話し手が替わったか、話が切り替わった可能性があります）。話の流れから見て不自然なら、区切らなくてかまいません。
 12. 出力は JSON だけ：{"segments":["…","…"]}
 
 用語集（「誤→正」は直し方の例）：
 ${if (compact) Glossary.forPromptCompact(glossary) else Glossary.forPrompt(glossary)}
 """.trim()
 
-    fun formatUser(context: String, raws: List<String>, keep: List<String>, s: Session): String {
+    fun formatUser(context: String, raws: List<String>, keep: List<String>, s: Session, voiceHints: List<String> = emptyList()): String {
         val input = JSONObject().put("segments", JSONArray(raws)).toString()
         return buildString {
             append(corrections(s))
             append(examples(s))
+            if (voiceHints.isNotEmpty()) {
+                append("声が変わった可能性のある位置（段落の区切りの参考。区間の番号は 1 から）：\n")
+                append(voiceHints.joinToString("\n") { "・$it" })
+                append("\n\n")
+            }
             if (keep.isNotEmpty()) {
                 append("利用者がマーカーを引いた語句（この言い回しのまま残す）：\n")
                 append(keep.joinToString("\n") { "・$it" })
