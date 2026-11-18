@@ -64,7 +64,28 @@ object Processor {
     // ---------- どの方法が使えるか ----------
 
     private fun usable(role: Role): List<Cand> =
-        Catalog.candidates(app, settings, role).filter { Cooldown.ok(it.key) }
+        Catalog.candidates(app, settings, role).filter { Cooldown.ok(it.key) && Cooldown.ok(roleKey(it, role)) }
+
+    /** 遅すぎて打ち切ったモデルは、その役割でだけしばらく使わない */
+    private fun roleKey(c: Cand, role: Role) = "${c.key}#${role.name}"
+
+    /** 時間を測りながら呼ぶ。打ち切りになったら、その役割で15分休ませる */
+    private fun <T> timed(c: Cand, role: Role, block: (Int) -> T): T {
+        val t0 = System.currentTimeMillis()
+        try {
+            val r = block(Latency.timeoutMs(role))
+            Latency.record(app, role, c, System.currentTimeMillis() - t0)
+            return r
+        } catch (e: java.net.SocketTimeoutException) {
+            Latency.record(app, role, c, Latency.timeoutMs(role).toLong())
+            Cooldown.set(roleKey(c, role), 15 * 60_000L, "${c.model}: 遅すぎるので${role.label}では15分休み")
+            throw RateLimited(0, "${c.model} が遅すぎます（${Latency.timeoutMs(role) / 1000}秒で打ち切り）")
+        } catch (e: RateLimited) {
+            // 混雑（503 など）も遅さとして数える
+            Latency.record(app, role, c, System.currentTimeMillis() - t0 + 5_000)
+            throw e
+        }
+    }
 
     /** いまクラウドで文字起こしできるか（録音側が端末内の文字起こしを使うかの判断にも使う） */
     fun cloudSttAvailable(): Boolean = Net.online(app) && usable(Role.STT).isNotEmpty()
@@ -188,9 +209,11 @@ object Processor {
         for (c in usable(Role.STT)) {
             status.value = "${c.model} で文字起こし中（${fmtClock(seg.startMs)}）"
             try {
-                val text = when (c.provider) {
-                    "groq" -> Groq.transcribe(settings.groqKey, c.model, file, Prompts.whisper(glossary, s))
-                    else -> Gemini.transcribe(settings.geminiKey, c.model, file, Prompts.stt(glossary, s))
+                val text = timed(c, Role.STT) { to ->
+                    when (c.provider) {
+                        "groq" -> Groq.transcribe(settings.groqKey, c.model, file, Prompts.whisper(glossary, s), to)
+                        else -> Gemini.transcribe(settings.geminiKey, c.model, file, Prompts.stt(glossary, s), to)
+                    }
                 }
                 Usage.add(c.key)
                 save(s, seg, cleanStt(text), c)
@@ -270,9 +293,11 @@ object Processor {
         for (c in usable(Role.FAST)) {
             status.value = "${c.model} で整形中（${fmtClock(batch.first().startMs)}〜）"
             try {
-                val out = when (c.provider) {
-                    "groq" -> Groq.chat(settings.groqKey, c.model, system, user, fast = true)
-                    else -> Gemini.text(settings.geminiKey, c.model, system, user, fast = true)
+                val out = timed(c, Role.FAST) { to ->
+                    when (c.provider) {
+                        "groq" -> Groq.chat(settings.groqKey, c.model, system, user, fast = true, timeoutMs = to)
+                        else -> Gemini.text(settings.geminiKey, c.model, system, user, fast = true, timeoutMs = to)
+                    }
                 }
                 Usage.add(c.key)
                 applyFormatted(s, batch, out, c, polished = false)
@@ -365,7 +390,7 @@ object Processor {
                 .mapNotNull { displayText(it) }.joinToString("").takeLast(800)
             val system = Prompts.formatSystem(glossary, s)
             val user = Prompts.formatUser(context, batch.map { it.raw ?: "" })
-            val cands = Catalog.candidates(app, st, Role.POLISH).filter { Cooldown.ok(it.key) }
+            val cands = usable(Role.POLISH)
             if (cands.isEmpty()) {
                 polishStatus.value = "仕上げ：使えるモデルが休み中"
                 return false
@@ -373,7 +398,12 @@ object Processor {
             for (c in cands) {
                 polishStatus.value = "${c.model} で仕上げ中（${fmtClock(batch.first().startMs)}〜）"
                 try {
-                    val out = Gemini.text(st.geminiKey, c.model, system, user, fast = false)
+                    val out = timed(c, Role.POLISH) { to ->
+                        when (c.provider) {
+                            "groq" -> Groq.chat(st.groqKey, c.model, system, user, fast = false, timeoutMs = to)
+                            else -> Gemini.text(st.geminiKey, c.model, system, user, fast = false, timeoutMs = to)
+                        }
+                    }
                     Usage.add(c.key)
                     applyFormatted(s, batch, out, c, polished = true)
                     polishStatus.value = ""

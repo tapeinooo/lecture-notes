@@ -159,7 +159,7 @@ fun HomeScreen(onOpen: (String) -> Unit, onSettings: () -> Unit) {
     var showNew by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize()) {
-        Header("講演メモ", null) { TextButton(onClick = onSettings) { Text("設定") } }
+        Header("たっぴぃず録音", null) { TextButton(onClick = onSettings) { Text("設定") } }
         Column(Modifier.padding(horizontal = 16.dp)) {
             Text("版 ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.labelSmall)
             UpdateBanner()
@@ -778,7 +778,7 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
                 context.startActivity(Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
             }) { Text("電池の最適化の設定を開く") }
             Text(
-                "長時間の録音が止まらないよう、「講演メモ」を最適化しない（制限なし）にしておくと安心です。",
+                "長時間の録音が止まらないよう、「たっぴぃず録音」を最適化しない（制限なし）にしておくと安心です。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.outline,
             )
@@ -814,13 +814,14 @@ private fun ModelOrder(st: Settings) {
             Text("（使えるモデルがありません。キーを入れてください）", style = MaterialTheme.typography.bodySmall)
         }
         list.forEachIndexed { i, c ->
-            val wait = Cooldown.remainingMs(c.key)
+            val wait = maxOf(Cooldown.remainingMs(c.key), Cooldown.remainingMs("${c.key}#${role.name}"))
             val state = if (wait > 0) {
                 val m = wait / 60000
                 if (m >= 60) "休み（あと${m / 60}時間${m % 60}分）" else "休み（あと${m + 1}分）"
             } else "使える"
             Text(
-                "${i + 1}. ${c.model}（${if (c.provider == "groq") "Groq" else "Gemini"}）　$state・今日 ${Usage.get(c.key)} 回",
+                "${i + 1}. ${c.model}（${if (c.provider == "groq") "Groq" else "Gemini"}）　$state・今日 ${Usage.get(c.key)} 回" +
+                    (Latency.avgMs(context, role, c)?.let { "・平均 %.1f 秒".format(it / 1000.0) + if (Latency.slow(context, role, c)) "（遅いので後回し）" else "" } ?: ""),
                 style = MaterialTheme.typography.bodySmall,
                 color = if (wait > 0) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.onSurface,
             )

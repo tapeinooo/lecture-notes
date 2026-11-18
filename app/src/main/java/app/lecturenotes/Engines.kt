@@ -116,7 +116,7 @@ object Groq {
     fun sttKey(model: String) = "groq-stt:$model"
     fun chatKey(model: String) = "groq-chat:$model"
 
-    fun transcribe(key: String, model: String, wav: File, prompt: String): String {
+    fun transcribe(key: String, model: String, wav: File, prompt: String, timeoutMs: Int): String {
         val boundary = "----lecturenotes${System.nanoTime()}"
         val out = ByteArrayOutputStream()
         fun field(name: String, value: String) {
@@ -135,11 +135,12 @@ object Groq {
             mapOf("Authorization" to "Bearer $key"),
             out.toByteArray(),
             "multipart/form-data; boundary=$boundary",
+            timeoutMs,
         )
         return JSONObject(resp).optString("text").trim()
     }
 
-    fun chat(key: String, model: String, system: String, user: String, fast: Boolean): String {
+    fun chat(key: String, model: String, system: String, user: String, fast: Boolean, timeoutMs: Int): String {
         val body = JSONObject().apply {
             put("model", model)
             if (fast && model.contains("gpt-oss")) put("reasoning_effort", "low")
@@ -155,6 +156,7 @@ object Groq {
             mapOf("Authorization" to "Bearer $key"),
             body.toString().toByteArray(),
             "application/json",
+            timeoutMs,
         )
         return JSONObject(resp).getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("content")
     }
@@ -171,33 +173,46 @@ object Gemini {
 
     fun cooldownKey(model: String) = "gemini:$model"
 
-    /** 考える時間の指定を受け付けなかったモデル */
+    /** 考える時間の指定を受け付けなかったモデル・minimal を受け付けなかったモデル */
     private val noThinkingCfg = java.util.Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+    private val noMinimal = java.util.Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
 
-    /** 速さ優先のとき、考える時間を切る（2.5 Flash 系）・短くする（3 以降） */
+    /**
+     * 速さ優先のとき、考える時間をできるだけ短くする。
+     *  - 2.5 系：thinkingBudget 0（考えない）
+     *  - 3 以降：thinkingLevel "minimal"（受け付けないモデル、例 3.8 Flash は "low"）
+     */
     private fun thinkingConfig(model: String, fast: Boolean): JSONObject? {
         if (!fast || model in noThinkingCfg) return null
         val m = model.lowercase()
         return when {
-            m.contains("pro") || m.startsWith("gemma") -> null
-            m.startsWith("gemini-2.5") -> JSONObject().put("thinkingBudget", 0)
-            Regex("^gemini-([3-9]|\\d{2})").containsMatchIn(m) -> JSONObject().put("thinkingLevel", "low")
+            m.startsWith("gemma") -> null
+            m.startsWith("gemini-2.5") -> if (m.contains("pro")) null else JSONObject().put("thinkingBudget", 0)
+            Regex("^gemini-([3-9]|\\d{2})").containsMatchIn(m) ->
+                JSONObject().put("thinkingLevel", if (model in noMinimal || m.contains("pro")) "low" else "minimal")
             else -> null
         }
     }
 
-    fun generate(key: String, model: String, system: String?, parts: JSONArray, json: Boolean, fast: Boolean = false): String {
-        return try {
-            generateOnce(key, model, system, parts, json, thinkingConfig(model, fast))
-        } catch (e: HttpError) {
-            if (e.code == 400 && fast && model !in noThinkingCfg && (e.message ?: "").contains("thinking", ignoreCase = true)) {
-                noThinkingCfg.add(model)
-                generateOnce(key, model, system, parts, json, null)
-            } else throw e
+    fun generate(
+        key: String, model: String, system: String?, parts: JSONArray, json: Boolean,
+        fast: Boolean = false, timeoutMs: Int = 180_000,
+    ): String {
+        var tries = 0
+        while (true) {
+            val cfg = thinkingConfig(model, fast)
+            try {
+                return generateOnce(key, model, system, parts, json, cfg, timeoutMs)
+            } catch (e: HttpError) {
+                val msg = e.message ?: ""
+                val aboutThinking = msg.contains("thinking", ignoreCase = true) || msg.contains("minimal", ignoreCase = true)
+                if (e.code != 400 || cfg == null || !aboutThinking || ++tries > 2) throw e
+                if (cfg.optString("thinkingLevel") == "minimal") noMinimal.add(model) else noThinkingCfg.add(model)
+            }
         }
     }
 
-    private fun generateOnce(key: String, model: String, system: String?, parts: JSONArray, json: Boolean, thinking: JSONObject?): String {
+    private fun generateOnce(key: String, model: String, system: String?, parts: JSONArray, json: Boolean, thinking: JSONObject?, timeoutMs: Int): String {
         // Gemma は systemInstruction と JSON 指定を受け付けないので、本文の先頭に入れる
         val gemma = model.startsWith("gemma")
         val body = JSONObject().apply {
@@ -217,7 +232,7 @@ object Gemini {
             mapOf("x-goog-api-key" to key),
             body.toString().toByteArray(),
             "application/json",
-            timeoutMs = 180_000,
+            timeoutMs = timeoutMs,
         )
         val j = JSONObject(resp)
         val cands = j.optJSONArray("candidates") ?: throw HttpError(200, "応答が空です: ${resp.take(200)}")
@@ -229,17 +244,17 @@ object Gemini {
         }
     }
 
-    fun transcribe(key: String, model: String, audio: File, prompt: String): String {
+    fun transcribe(key: String, model: String, audio: File, prompt: String, timeoutMs: Int): String {
         val parts = JSONArray()
             .put(JSONObject().put("text", prompt))
             .put(JSONObject().put("inline_data", JSONObject()
                 .put("mime_type", "audio/wav")
                 .put("data", Base64.encodeToString(Audio.toWavBytes(audio), Base64.NO_WRAP))))
-        return generate(key, model, null, parts, json = false, fast = true).trim()
+        return generate(key, model, null, parts, json = false, fast = true, timeoutMs = timeoutMs).trim()
     }
 
-    fun text(key: String, model: String, system: String, user: String, fast: Boolean): String =
-        generate(key, model, system, JSONArray().put(JSONObject().put("text", user)), json = true, fast = fast)
+    fun text(key: String, model: String, system: String, user: String, fast: Boolean, timeoutMs: Int): String =
+        generate(key, model, system, JSONArray().put(JSONObject().put("text", user)), json = true, fast = fast, timeoutMs = timeoutMs)
 
     fun listModels(key: String): List<String> {
         val resp = Http.get("$BASE/models?pageSize=200", mapOf("x-goog-api-key" to key))

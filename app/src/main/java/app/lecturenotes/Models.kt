@@ -153,12 +153,15 @@ gemini:gemini-2.5-flash
         Tier.PRO -> g.version * 10 + 1
     } - if (g.unstable) 0.5 else 0.0
 
-    /** すぐの整形：速さ優先（Pro は遅いので使わない） */
+    /**
+     * すぐの整形：速さ優先。Flash-Lite（速さのためのモデル）を先に、Flash は後に。Pro は使わない。
+     * 新しい Flash は頭は良いが、考える時間を短くできなかったり（3.8 Flash は minimal 不可）、混んで遅いことがあるため。
+     */
     private fun fastScore(g: GInfo): Double = when (g.tier) {
         Tier.GEMMA -> 10.0 + g.sizeB / 4.0
         Tier.PRO -> -1.0
-        Tier.LITE -> g.version * 10 + 5
-        Tier.FLASH -> g.version * 10 + 3
+        Tier.LITE -> 200 + g.version
+        Tier.FLASH -> 100 + g.version
     } - if (g.unstable) 0.5 else 0.0
 
     /** 仕上げ：頭の良さ優先 */
@@ -191,8 +194,10 @@ gemini:gemini-2.5-flash
                     .take(3).map { Cand("groq", it) }
                 val gemma = gem.filter { it.tier == Tier.GEMMA }.sortedByDescending { fastScore(it) }.take(2)
                     .map { Cand("gemini", it.name) }
-                // 速い Gemini 2つ → Groq → 残りの Gemini → Gemma
-                gm.take(2) + gq + gm.drop(2).take(3) + gemma
+                // Flash-Lite（最大2つ）→ Groq（とても速い）→ Flash → Gemma
+                val lite = gm.filter { c -> gem.first { it.name == c.model }.tier == Tier.LITE }.take(2)
+                val flash = gm.filter { c -> gem.first { it.name == c.model }.tier == Tier.FLASH }.take(3)
+                lite + gq + flash + gemma
             }
             Role.POLISH -> gem.filter { polishScore(it) > 0 }.sortedByDescending { polishScore(it) }.take(5)
                 .map { Cand("gemini", it.name) }
@@ -215,14 +220,61 @@ gemini:gemini-2.5-flash
                 else -> false
             }
         }.filter { c ->
+            if (role == Role.POLISH) c.provider == "gemini" || !st.autoModels else true
+        }.filter { c ->
             if (role != Role.STT) true else when (st.mode) {
                 Mode.AUTO -> true
                 Mode.GROQ -> c.provider == "groq"
                 Mode.GEMINI -> c.provider == "gemini"
                 Mode.LOCAL -> false
             }
-        }
+        }.sortedBy { if (Latency.slow(ctx, role, it)) 1 else 0 } // 遅かったモデルは後ろへ（順番は保つ）
     }
+}
+
+/**
+ * モデルごと・役割ごとの、実際にかかった時間（移動平均）。遅いモデルは自動で後回しにする。
+ * 6時間たったら測り直す（混雑が直っていれば、また前に戻る）。
+ */
+object Latency {
+    private const val PREF = "latency"
+    private const val FORGET_MS = 6 * 3600_000L
+
+    fun limitMs(role: Role) = when (role) {
+        Role.STT -> 12_000L
+        Role.FAST -> 10_000L
+        Role.POLISH -> 90_000L
+    }
+
+    /** 1回の呼び出しの打ち切り時間 */
+    fun timeoutMs(role: Role) = when (role) {
+        Role.STT -> 40_000
+        Role.FAST -> 25_000
+        Role.POLISH -> 150_000
+    }
+
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+    private fun k(role: Role, c: Cand) = "${role.name}|${c.key}"
+
+    @Synchronized
+    fun record(ctx: Context, role: Role, c: Cand, ms: Long) {
+        val p = prefs(ctx)
+        val key = k(role, c)
+        val fresh = System.currentTimeMillis() - p.getLong("$key@t", 0) < FORGET_MS
+        val old = if (fresh) p.getFloat(key, -1f) else -1f
+        val avg = if (old < 0) ms.toFloat() else old * 0.6f + ms * 0.4f
+        p.edit().putFloat(key, avg).putLong("$key@t", System.currentTimeMillis()).apply()
+    }
+
+    fun avgMs(ctx: Context, role: Role, c: Cand): Long? {
+        val p = prefs(ctx)
+        val key = k(role, c)
+        if (System.currentTimeMillis() - p.getLong("$key@t", 0) > FORGET_MS) return null
+        val v = p.getFloat(key, -1f)
+        return if (v < 0) null else v.toLong()
+    }
+
+    fun slow(ctx: Context, role: Role, c: Cand) = (avgMs(ctx, role, c) ?: 0L) > limitMs(role)
 }
 
 /** 今日モデルごとに何回使ったか（画面に出す。アプリを閉じると消える） */

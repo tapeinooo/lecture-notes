@@ -75,7 +75,7 @@ class RecorderService : Service() {
         val n: Notification = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentTitle("録音中")
-            .setContentText("講演メモが録音しています")
+            .setContentText("たっぴぃず録音が録音しています")
             .setContentIntent(open)
             .setOngoing(true)
             .build()
