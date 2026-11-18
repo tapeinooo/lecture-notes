@@ -21,6 +21,9 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -340,7 +343,7 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
 
         LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp), state = listState) {
             items(rows) { para ->
-                ParaView(para) { selected = it }
+                ParaView(para, onEdit = { selected = it }, onMark = { Marker.toggleWhole(id, it.index) })
             }
             if (isRec) {
                 item { LiveBlock(live, now) }
@@ -412,7 +415,8 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
     selected?.let { g0 ->
         val g = s.segments.firstOrNull { it.index == g0.index } ?: g0
         val before = displayText(g) ?: ""
-        var edit by remember(g.index) { mutableStateOf(before) }
+        var field by remember(g.index) { mutableStateOf(TextFieldValue(before)) }
+        val edit = field.text
         val pos = s.segments.indexOfFirst { it.index == g.index }
         val prev = s.segments.getOrNull(pos - 1)?.let { displayText(it) }?.takeLast(60)
         val next = s.segments.getOrNull(pos + 1)?.let { displayText(it) }?.take(60)
@@ -423,12 +427,32 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
                     if (!prev.isNullOrBlank()) Text("…$prev", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
                     OutlinedTextField(
-                        value = edit, onValueChange = { edit = it },
+                        value = field, onValueChange = { field = it },
                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                     )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        val sel = field.selection
+                        OutlinedButton(
+                            onClick = {
+                                Marker.add(id, g.index, edit.substring(sel.min, sel.max))
+                                field = field.copy(selection = androidx.compose.ui.text.TextRange(sel.max))
+                            },
+                            enabled = !sel.collapsed,
+                        ) { Text("🖍 選んだところにマーカー") }
+                        Spacer(Modifier.width(8.dp))
+                        TextButton(onClick = { Marker.toggleWhole(id, g.index) }) {
+                            Text(if (Marker.WHOLE in g.highlights) "全体のマーカーを消す" else "全体にマーカー")
+                        }
+                    }
+                    g.highlights.filter { it != Marker.WHOLE }.forEach { h ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("🖍 $h", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                            TextButton(onClick = { Marker.remove(id, g.index, h) }) { Text("消す") }
+                        }
+                    }
                     if (!next.isNullOrBlank()) Text("$next…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
                     Text(
-                        "空行を入れると、そこで段落が分かれます。直したところは AI が上書きせず、直し方を覚えてこの先の文字起こし・整形に使います。",
+                        "文字を選んで「マーカー」を押すと線を引けます（文章を長押しすると、その部分全体に引けます）。空行を入れると、そこで段落が分かれます。直したところは AI が上書きせず、直し方を覚えてこの先の文字起こし・整形に使います。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.outline,
                         modifier = Modifier.padding(top = 4.dp),
@@ -572,9 +596,12 @@ private fun LiveBlock(live: Live.State, now: Long) {
     }
 }
 
-/** 1つの段落。押したところの区間を直せる。聖句の参照を押すと wol.jw.org を開く */
+private val MARKER_COLOR = androidx.compose.ui.graphics.Color(0x80FFE14D)
+
+/** 1つの段落。押したところの区間を直せる。長押しでマーカー。聖句の参照を押すと wol.jw.org を開く */
 @Composable
-private fun ParaView(para: Transcript.Para, onEdit: (Segment) -> Unit) {
+private fun ParaView(para: Transcript.Para, onEdit: (Segment) -> Unit, onMark: (Segment) -> Unit) {
+    val haptic = LocalHapticFeedback.current
     val uri = LocalUriHandler.current
     val cs = MaterialTheme.colorScheme
     val built = remember(para, cs) {
@@ -591,6 +618,19 @@ private fun ParaView(para: Transcript.Para, onEdit: (Segment) -> Unit) {
                     Transcript.Kind.MARK -> SpanStyle(color = cs.tertiary, fontWeight = FontWeight.Bold)
                 }
                 withStyle(style) { append(if (p.kind == Transcript.Kind.MARK) " ${p.text} " else p.text) }
+                p.seg?.let { g ->
+                    val bg = SpanStyle(background = MARKER_COLOR)
+                    if (Marker.WHOLE in g.highlights) addStyle(bg, start, length)
+                    val full = displayText(g) ?: ""
+                    for (h in g.highlights) {
+                        if (h == Marker.WHOLE) continue
+                        for (r in Marker.find(p.text, h)) addStyle(bg, start + r.first, start + r.last + 1)
+                        // AI が書き換えて見つからなくなった語句は、区間の最後に残す
+                        if (Marker.find(full, h).isEmpty() && full.trimEnd().endsWith(p.text.trimEnd())) {
+                            withStyle(bg) { append(" 🖍$h") }
+                        }
+                    }
+                }
                 if (p.kind != Transcript.Kind.MARK) {
                     for (r in Scripture.find(p.text)) {
                         addStyle(SpanStyle(color = cs.primary, textDecoration = TextDecoration.Underline), start + r.start, start + r.end)
@@ -610,15 +650,23 @@ private fun ParaView(para: Transcript.Para, onEdit: (Segment) -> Unit) {
             style = MaterialTheme.typography.bodyLarge,
             onTextLayout = { layout = it },
             modifier = Modifier.pointerInput(built) {
-                detectTapGestures { pos ->
-                    val off = layout?.getOffsetForPosition(pos) ?: return@detectTapGestures
-                    built.third.firstOrNull { off in it.first until it.second }?.let {
-                        uri.openUri(it.third)
-                        return@detectTapGestures
-                    }
-                    (built.second.firstOrNull { off in it.first until it.second } ?: built.second.lastOrNull { it.first <= off })
-                        ?.let { onEdit(it.third) }
+                fun segAt(pos: androidx.compose.ui.geometry.Offset): Segment? {
+                    val off = layout?.getOffsetForPosition(pos) ?: return null
+                    return (built.second.firstOrNull { off in it.first until it.second } ?: built.second.lastOrNull { it.first <= off })?.third
                 }
+                detectTapGestures(
+                    onLongPress = { pos ->
+                        segAt(pos)?.let {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onMark(it)
+                        }
+                    },
+                    onTap = { pos ->
+                        val off = layout?.getOffsetForPosition(pos)
+                        val url = off?.let { o -> built.third.firstOrNull { o in it.first until it.second } }
+                        if (url != null) uri.openUri(url.third) else segAt(pos)?.let { onEdit(it) }
+                    },
+                )
             },
         )
     }

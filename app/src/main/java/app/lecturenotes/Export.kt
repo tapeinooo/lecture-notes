@@ -34,11 +34,25 @@ object Export {
                 when (pc.kind) {
                     Transcript.Kind.MARK -> " **【★ ${fmtClock(pc.mark?.timeMs ?: 0)} ${pc.mark?.note ?: ""}】** "
                     Transcript.Kind.PENDING -> "…"
-                    else -> pc.text
+                    else -> {
+                        val g = pc.seg
+                        if (g == null || g.highlights.isEmpty()) pc.text
+                        else if (Marker.WHOLE in g.highlights) "**${pc.text}**"
+                        else g.highlights.fold(pc.text) { acc, h -> if (acc.contains(h)) acc.replaceFirst(h, "**$h**") else acc }
+                    }
                 }
             }.trim()
             if (body.isEmpty()) continue
             append("`${fmtClock(p.startMs)}` $body\n\n")
+        }
+        // マーカーの一覧
+        val marked = s.segments.flatMap { g ->
+            g.highlights.map { h -> fmtClock(g.startMs) to (if (h == Marker.WHOLE) (displayText(g) ?: "").trim() else h) }
+        }.filter { it.second.isNotEmpty() }
+        if (marked.isNotEmpty()) {
+            append("---\n\n## マーカーを引いたところ\n\n")
+            marked.forEach { (t, h) -> append("- `$t` $h\n") }
+            append("\n")
         }
         // 聖句の参照の一覧
         val refs = s.segments.flatMap { g ->

@@ -28,6 +28,8 @@ data class Segment(
     val polished: Boolean = false,
     /** 利用者が直した文（あれば AI は上書きしない） */
     val edited: String? = null,
+    /** マーカーを引いた語句。"*" はこの区間全体 */
+    val highlights: List<String> = emptyList(),
     val silent: Boolean = false,
     val error: String? = null,
 )
@@ -127,6 +129,7 @@ object Repo {
                     g.formatModel?.let { put("formatModel", it) }
                     put("polished", g.polished)
                     g.edited?.let { put("edited", it) }
+                    if (g.highlights.isNotEmpty()) put("highlights", JSONArray(g.highlights))
                     put("silent", g.silent)
                     g.error?.let { put("error", it) }
                 })
@@ -162,6 +165,7 @@ object Repo {
                     formatModel = g.optStr("formatModel"),
                     polished = g.optBoolean("polished"),
                     edited = g.optStr("edited"),
+                    highlights = g.optJSONArray("highlights")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList(),
                     silent = g.optBoolean("silent"),
                     error = g.optStr("error"),
                 )

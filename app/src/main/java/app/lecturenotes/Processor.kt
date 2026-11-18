@@ -288,7 +288,7 @@ object Processor {
         val context = s.segments.take(firstIdx.coerceAtLeast(0))
             .mapNotNull { displayText(it) }.joinToString("").takeLast(400)
         val system = Prompts.formatSystem(glossary, s)
-        val user = Prompts.formatUser(context, batch.map { it.raw ?: "" })
+        val user = Prompts.formatUser(context, batch.map { it.raw ?: "" }, Marker.keep(batch))
 
         for (c in usable(Role.FAST)) {
             status.value = "${c.model} で整形中（${fmtClock(batch.first().startMs)}〜）"
@@ -389,7 +389,7 @@ object Processor {
             val context = s.segments.take(firstIdx.coerceAtLeast(0))
                 .mapNotNull { displayText(it) }.joinToString("").takeLast(800)
             val system = Prompts.formatSystem(glossary, s)
-            val user = Prompts.formatUser(context, batch.map { it.raw ?: "" })
+            val user = Prompts.formatUser(context, batch.map { it.raw ?: "" }, Marker.keep(batch))
             val cands = usable(Role.POLISH)
             if (cands.isEmpty()) {
                 polishStatus.value = "仕上げ：使えるモデルが休み中"
@@ -499,9 +499,14 @@ ${Glossary.forPrompt(glossary)}
 ${corrections(s)}${examples(s)}
 """.trim()
 
-    fun formatUser(context: String, raws: List<String>): String {
+    fun formatUser(context: String, raws: List<String>, keep: List<String> = emptyList()): String {
         val input = JSONObject().put("segments", JSONArray(raws)).toString()
         return buildString {
+            if (keep.isNotEmpty()) {
+                append("利用者がマーカーを引いた語句（この言い回しのまま残す）：\n")
+                append(keep.joinToString("\n") { "・$it" })
+                append("\n\n")
+            }
             if (context.isNotBlank()) {
                 append("直前の内容（参考。出力には含めない。空行は段落の区切り）：\n")
                 append(context)
