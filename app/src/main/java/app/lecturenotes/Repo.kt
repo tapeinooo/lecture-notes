@@ -45,6 +45,10 @@ data class Session(
     val marks: List<Mark>,
     /** この記録で利用者が直した「誤→正」（文字起こし・整形の参考にする） */
     val corrections: List<String> = emptyList(),
+    /** 話し手 */
+    val speaker: String = "",
+    /** ラベル（集会・講演・大会・その他 など） */
+    val labels: List<String> = emptyList(),
 ) {
     val durationMs: Long get() = segments.lastOrNull()?.endMs ?: 0L
 }
@@ -113,7 +117,12 @@ object Repo {
     private fun toJson(s: Session) = JSONObject().apply {
         put("id", s.id)
         put("title", s.title)
+        // 録音日時・録音時間・話し手・ラベルは、文字とは別の情報として保存する
         put("startedAt", s.startedAt)
+        put("recordedAt", fmtDate(s.startedAt))
+        put("durationMs", s.durationMs)
+        put("speaker", s.speaker)
+        put("labels", JSONArray(s.labels))
         put("recording", s.recording)
         put("segments", JSONArray().apply {
             s.segments.forEach { g ->
@@ -175,6 +184,8 @@ object Repo {
                 Mark(m.getLong("timeMs"), m.optString("note"))
             },
             corrections = j.optJSONArray("corrections")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList(),
+            speaker = j.optString("speaker"),
+            labels = j.optJSONArray("labels")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList(),
         )
     }
 }

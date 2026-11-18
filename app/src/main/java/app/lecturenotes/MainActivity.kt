@@ -1,4 +1,4 @@
-@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
 
 package app.lecturenotes
 
@@ -56,6 +56,8 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -125,7 +127,8 @@ class MainActivity : ComponentActivity() {
 
 sealed interface Screen {
     data object Home : Screen
-    data class Detail(val id: String) : Screen
+    /** openInfo = 情報欄を開いた状態で表示する（新しく録音したとき） */
+    data class Detail(val id: String, val openInfo: Boolean = false) : Screen
     /** 設定。back は戻る先（録音中の画面から開いたら、そこへ戻る） */
     data class Config(val back: Screen) : Screen
     data class GlossaryEdit(val back: Config) : Screen
@@ -156,8 +159,15 @@ fun AppRoot() {
 
     Box(Modifier.fillMaxSize().safeDrawingPadding()) {
         when (val s = screen) {
-            Screen.Home -> HomeScreen(onOpen = { screen = Screen.Detail(it) }, onSettings = { screen = Screen.Config(Screen.Home) })
-            is Screen.Detail -> DetailScreen(s.id, onBack = { screen = Screen.Home }, onSettings = { screen = Screen.Config(s) })
+            Screen.Home -> HomeScreen(
+                onOpen = { id, info -> screen = Screen.Detail(id, info) },
+                onSettings = { screen = Screen.Config(Screen.Home) },
+            )
+            is Screen.Detail -> DetailScreen(
+                s.id, s.openInfo,
+                onBack = { screen = Screen.Home },
+                onSettings = { screen = Screen.Config(s.copy(openInfo = false)) },
+            )
             is Screen.Config -> SettingsScreen(onBack = { screen = s.back }, onGlossary = { screen = Screen.GlossaryEdit(s) })
             is Screen.GlossaryEdit -> GlossaryScreen(onBack = { screen = s.back })
         }
@@ -181,58 +191,174 @@ private fun Header(title: String, onBack: (() -> Unit)?, actions: @Composable ()
 // ---------------- 一覧 ----------------
 
 @Composable
-fun HomeScreen(onOpen: (String) -> Unit, onSettings: () -> Unit) {
+fun HomeScreen(onOpen: (String, Boolean) -> Unit, onSettings: () -> Unit) {
     val context = LocalContext.current
     val sessions by Repo.sessions.collectAsState()
     val live by Live.state.collectAsState()
-    var showNew by remember { mutableStateOf(false) }
+    val labels by Meta.labels.collectAsState()
+    var filter by remember { mutableStateOf<String?>(null) }
+    var confirmDelete by remember { mutableStateOf<String?>(null) }
+    val shown = sessions.filter { filter == null || filter in it.labels }
 
     Column(Modifier.fillMaxSize()) {
-        Header("たっぴぃず録音", null) { TextButton(onClick = onSettings) { Text("設定") } }
+        Header("たっぴぃず録音", null) {
+            TextButton(onClick = onSettings, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("⚙", fontSize = 22.sp) }
+        }
         Column(Modifier.padding(horizontal = 16.dp)) {
             Text("版 ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.labelSmall)
             UpdateBanner()
             Spacer(Modifier.height(8.dp))
             Button(
-                onClick = { showNew = true },
+                onClick = {
+                    // すぐ録音を始める（名前・話し手・ラベルは録音しながら入れられる）
+                    val s = Repo.create(fmtDate(System.currentTimeMillis()))
+                    RecorderService.start(context, s.id)
+                    onOpen(s.id, true)
+                },
                 enabled = live.sessionId == null,
                 modifier = Modifier.fillMaxWidth().height(56.dp),
-            ) { Text("新しく録音する", style = MaterialTheme.typography.titleMedium) }
-            Spacer(Modifier.height(8.dp))
+            ) { Text("● 新しく録音する", style = MaterialTheme.typography.titleMedium) }
+            // ラベルで絞り込む
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(vertical = 4.dp)) {
+                FilterChip(selected = filter == null, onClick = { filter = null }, label = { Text("すべて") })
+                labels.forEach { l ->
+                    FilterChip(selected = filter == l, onClick = { filter = if (filter == l) null else l }, label = { Text(l) })
+                }
+            }
         }
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-            items(sessions, key = { it.id }) { s ->
+            items(shown, key = { it.id }) { s ->
+                val recording = live.sessionId == s.id
                 Card(
-                    Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { onOpen(s.id) },
+                    Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { onOpen(s.id, false) },
                 ) {
-                    Column(Modifier.padding(12.dp)) {
-                        Text(s.title, style = MaterialTheme.typography.titleMedium)
-                        val rec = if (live.sessionId == s.id) "・● 録音中" else ""
-                        Text("${fmtDate(s.startedAt)}・${fmtClock(s.durationMs)}$rec", style = MaterialTheme.typography.bodySmall)
+                    Column(Modifier.padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 4.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(s.title, style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    listOfNotNull(
+                                        fmtDate(s.startedAt),
+                                        fmtClock(s.durationMs),
+                                        s.speaker.ifBlank { null },
+                                        if (recording) "● 録音中" else null,
+                                    ).joinToString("・"),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                                if (s.labels.isNotEmpty()) {
+                                    Text(
+                                        s.labels.joinToString("　") { "#$it" },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
+                            }
+                            if (!recording) {
+                                TextButton(onClick = { confirmDelete = if (confirmDelete == s.id) null else s.id }) { Text("🗑") }
+                            }
+                        }
+                        if (confirmDelete == s.id) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "録音と文字がすべて消えます。元に戻せません。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                TextButton(onClick = { confirmDelete = null }) { Text("やめる") }
+                                Button(
+                                    onClick = { confirmDelete = null; Repo.delete(s.id) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                                ) { Text("削除") }
+                            }
+                        }
                     }
+                }
+            }
+            if (shown.isEmpty()) {
+                item {
+                    Text(
+                        if (filter == null) "まだ記録がありません" else "「$filter」の記録はありません",
+                        color = MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.padding(16.dp),
+                    )
                 }
             }
         }
     }
+}
 
-    if (showNew) {
-        var title by remember { mutableStateOf("${fmtDate(System.currentTimeMillis())} 講演") }
-        AlertDialog(
-            onDismissRequest = { showNew = false },
-            title = { Text("新しく録音する") },
-            text = {
-                OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("名前") }, singleLine = true)
-            },
-            confirmButton = {
-                Button(onClick = {
-                    val s = Repo.create(title.ifBlank { "講演" })
-                    showNew = false
-                    RecorderService.start(context, s.id)
-                    onOpen(s.id)
-                }) { Text("録音を始める") }
-            },
-            dismissButton = { TextButton(onClick = { showNew = false }) { Text("やめる") } },
+/** 記録の情報（タイトル・話し手・ラベル・録音日時・録音時間）をその場で直す欄 */
+@Composable
+private fun InfoPanel(s: Session, liveMs: Long?, onClose: () -> Unit) {
+    val labels by Meta.labels.collectAsState()
+    Meta.speakers.collectAsState().value // 候補が増えたら描き直す
+    var title by remember(s.id) { mutableStateOf(s.title) }
+    var speaker by remember(s.id) { mutableStateOf(s.speaker) }
+    var newLabel by remember { mutableStateOf("") }
+    // 画面を離れるときも、話し手を候補に残す
+    val latestSpeaker = androidx.compose.runtime.rememberUpdatedState(speaker)
+    androidx.compose.runtime.DisposableEffect(s.id) {
+        onDispose { Meta.addSpeaker(latestSpeaker.value) }
+    }
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+            .padding(8.dp),
+    ) {
+        OutlinedTextField(
+            value = title,
+            onValueChange = { v -> title = v; Repo.update(s.id) { it.copy(title = v) } },
+            label = { Text("タイトル") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
+        OutlinedTextField(
+            value = speaker,
+            onValueChange = { v -> speaker = v; Repo.update(s.id) { it.copy(speaker = v.trim()) } },
+            label = { Text("話し手") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
+        val sug = Meta.suggest(speaker)
+        if (sug.isNotEmpty()) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                sug.forEach { name ->
+                    AssistChip(onClick = { speaker = name; Repo.update(s.id) { it.copy(speaker = name) } }, label = { Text(name) })
+                }
+            }
+        }
+        Text("ラベル", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 4.dp))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            (labels + s.labels.filter { it !in labels }).forEach { l ->
+                val on = l in s.labels
+                FilterChip(
+                    selected = on,
+                    onClick = { Repo.update(s.id) { it.copy(labels = if (on) it.labels - l else it.labels + l) } },
+                    label = { Text(l) },
+                )
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = newLabel, onValueChange = { newLabel = it },
+                placeholder = { Text("新しいラベル") }, singleLine = true, modifier = Modifier.weight(1f),
+            )
+            SmallBtn("＋ 足す", enabled = newLabel.isNotBlank()) {
+                val l = newLabel.trim()
+                Meta.addLabel(l)
+                Repo.update(s.id) { it.copy(labels = (it.labels + l).distinct()) }
+                newLabel = ""
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "録音日時 ${fmtDate(s.startedAt)}・録音時間 ${fmtClock(liveMs ?: s.durationMs)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+                modifier = Modifier.weight(1f),
+            )
+            SmallBtn("閉じる", primary = true) {
+                Meta.addSpeaker(speaker)
+                onClose()
+            }
+        }
     }
 }
 
@@ -277,7 +403,7 @@ private fun UpdateBanner() {
 // ---------------- 記録 ----------------
 
 @Composable
-fun DetailScreen(id: String, onBack: () -> Unit, onSettings: () -> Unit) {
+fun DetailScreen(id: String, openInfo: Boolean, onBack: () -> Unit, onSettings: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val sessions by Repo.sessions.collectAsState()
@@ -309,7 +435,7 @@ fun DetailScreen(id: String, onBack: () -> Unit, onSettings: () -> Unit) {
     var listHeight by remember { mutableStateOf(0f) }
     var noteFor by remember { mutableStateOf<Long?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
-    var renaming by remember { mutableStateOf(false) }
+    var showInfo by remember(id) { mutableStateOf(openInfo) }
     var busy by remember { mutableStateOf<String?>(null) }
 
     var learned by remember { mutableStateOf<Pair<Int, List<Corrections.Fix>>?>(null) }
@@ -367,12 +493,26 @@ fun DetailScreen(id: String, onBack: () -> Unit, onSettings: () -> Unit) {
                         }
                         Processor.wake()
                     })
-                    DropdownMenuItem(text = { Text("名前を変える") }, onClick = { menu = false; renaming = true })
+                    DropdownMenuItem(text = { Text("情報（タイトル・話し手・ラベル）") }, onClick = { menu = false; showInfo = true })
                     DropdownMenuItem(text = { Text("削除する") }, enabled = !isRec, onClick = { menu = false; confirmDelete = true })
                 }
             }
         }
 
+        if (showInfo) {
+            InfoPanel(s, if (isRec) live.elapsedMs(now) else null) { showInfo = false }
+        } else {
+            // タイトルの下に、話し手・ラベルを小さく。押すと情報欄を開く
+            Text(
+                listOfNotNull(
+                    s.speaker.ifBlank { null },
+                    s.labels.joinToString(" ") { "#$it" }.ifBlank { null },
+                ).joinToString("・").ifBlank { "＋ 話し手・ラベルを入れる" },
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.outline,
+                modifier = Modifier.fillMaxWidth().clickable { showInfo = true }.padding(horizontal = 16.dp, vertical = 2.dp),
+            )
+        }
         RecordControls(s, isRec, otherRec, live, now, onMark = {
             val t = live.elapsedMs()
             Repo.update(id) { it.copy(marks = it.marks + Mark(t, "")) }
@@ -473,22 +613,6 @@ fun DetailScreen(id: String, onBack: () -> Unit, onSettings: () -> Unit) {
                 }, onClose = { noteFor = null })
             }
         }
-    }
-
-    if (renaming) {
-        var title by remember { mutableStateOf(s.title) }
-        AlertDialog(
-            onDismissRequest = { renaming = false },
-            title = { Text("名前を変える") },
-            text = { OutlinedTextField(value = title, onValueChange = { title = it }, singleLine = true) },
-            confirmButton = {
-                Button(onClick = {
-                    Repo.update(id) { it.copy(title = title.ifBlank { it.title }) }
-                    renaming = false
-                }) { Text("変える") }
-            },
-            dismissButton = { TextButton(onClick = { renaming = false }) { Text("やめる") } },
-        )
     }
 
     if (confirmDelete) {
@@ -1107,6 +1231,9 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
             )
             OutlinedButton(onClick = onGlossary) { Text("用語集を編集する") }
 
+            Section("ラベルと話し手")
+            LabelSpeakerSettings()
+
             Section("その他")
             OutlinedButton(onClick = {
                 context.startActivity(Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
@@ -1127,6 +1254,30 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
             UpdateBanner()
             Spacer(Modifier.height(32.dp))
         }
+    }
+}
+
+@Composable
+private fun LabelSpeakerSettings() {
+    val labels by Meta.labels.collectAsState()
+    val speakers by Meta.speakers.collectAsState()
+    var newLabel by remember { mutableStateOf("") }
+    Text("ラベル（× で一覧から外す。付けてある記録はそのまま）", style = MaterialTheme.typography.bodySmall)
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        labels.forEach { l -> AssistChip(onClick = { Meta.removeLabel(l) }, label = { Text("$l ×") }) }
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        OutlinedTextField(
+            value = newLabel, onValueChange = { newLabel = it },
+            placeholder = { Text("新しいラベル") }, singleLine = true, modifier = Modifier.weight(1f),
+        )
+        SmallBtn("＋ 足す", enabled = newLabel.isNotBlank()) { Meta.addLabel(newLabel); newLabel = "" }
+    }
+    SmallBtn("最初のラベル（集会・講演・大会・その他）に戻す") { Meta.resetLabels() }
+    Text("話し手の候補（× で消す）", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
+    if (speakers.isEmpty()) Text("（まだありません。記録の情報に話し手を入れると増えます）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        speakers.forEach { n -> AssistChip(onClick = { Meta.removeSpeaker(n) }, label = { Text("$n ×") }) }
     }
 }
 

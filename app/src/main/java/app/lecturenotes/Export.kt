@@ -28,7 +28,11 @@ object Export {
 
     fun markdown(s: Session): String = buildString {
         append("# ${s.title}\n\n")
-        append("${fmtDate(s.startedAt)}　録音 ${fmtClock(s.durationMs)}\n\n")
+        append("- 録音日時：${fmtDate(s.startedAt)}\n")
+        append("- 録音時間：${fmtClock(s.durationMs)}\n")
+        if (s.speaker.isNotBlank()) append("- 話し手：${s.speaker}\n")
+        if (s.labels.isNotEmpty()) append("- ラベル：${s.labels.joinToString("、")}\n")
+        append("\n")
         for (p in Transcript.paragraphs(s)) {
             val body = p.pieces.joinToString("") { pc ->
                 when (pc.kind) {
