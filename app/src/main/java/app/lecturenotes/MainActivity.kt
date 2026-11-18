@@ -909,7 +909,6 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
             Field("間がなくても整形するまでの秒数", fastMax, KeyboardType.Number) {
                 fastMax = it; it.toIntOrNull()?.let { v -> st.fastMaxSec = v.coerceIn(15, 180) }
             }
-            }
 
             Section("その場の表示")
             Row(verticalAlignment = Alignment.CenterVertically) {
