@@ -139,9 +139,10 @@ object Groq {
         return JSONObject(resp).optString("text").trim()
     }
 
-    fun chat(key: String, model: String, system: String, user: String): String {
+    fun chat(key: String, model: String, system: String, user: String, fast: Boolean): String {
         val body = JSONObject().apply {
             put("model", model)
+            if (fast && model.contains("gpt-oss")) put("reasoning_effort", "low")
             put("temperature", 0.2)
             put("response_format", JSONObject().put("type", "json_object"))
             put("messages", JSONArray().apply {
@@ -170,7 +171,33 @@ object Gemini {
 
     fun cooldownKey(model: String) = "gemini:$model"
 
-    fun generate(key: String, model: String, system: String?, parts: JSONArray, json: Boolean): String {
+    /** 考える時間の指定を受け付けなかったモデル */
+    private val noThinkingCfg = java.util.Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+
+    /** 速さ優先のとき、考える時間を切る（2.5 Flash 系）・短くする（3 以降） */
+    private fun thinkingConfig(model: String, fast: Boolean): JSONObject? {
+        if (!fast || model in noThinkingCfg) return null
+        val m = model.lowercase()
+        return when {
+            m.contains("pro") || m.startsWith("gemma") -> null
+            m.startsWith("gemini-2.5") -> JSONObject().put("thinkingBudget", 0)
+            Regex("^gemini-([3-9]|\\d{2})").containsMatchIn(m) -> JSONObject().put("thinkingLevel", "low")
+            else -> null
+        }
+    }
+
+    fun generate(key: String, model: String, system: String?, parts: JSONArray, json: Boolean, fast: Boolean = false): String {
+        return try {
+            generateOnce(key, model, system, parts, json, thinkingConfig(model, fast))
+        } catch (e: HttpError) {
+            if (e.code == 400 && fast && model !in noThinkingCfg && (e.message ?: "").contains("thinking", ignoreCase = true)) {
+                noThinkingCfg.add(model)
+                generateOnce(key, model, system, parts, json, null)
+            } else throw e
+        }
+    }
+
+    private fun generateOnce(key: String, model: String, system: String?, parts: JSONArray, json: Boolean, thinking: JSONObject?): String {
         // Gemma は systemInstruction と JSON 指定を受け付けないので、本文の先頭に入れる
         val gemma = model.startsWith("gemma")
         val body = JSONObject().apply {
@@ -182,6 +209,7 @@ object Gemini {
             put("generationConfig", JSONObject().apply {
                 put("temperature", 0.2)
                 if (json && !gemma) put("responseMimeType", "application/json")
+                if (thinking != null) put("thinkingConfig", thinking)
             })
         }
         val resp = Http.post(
@@ -207,11 +235,11 @@ object Gemini {
             .put(JSONObject().put("inline_data", JSONObject()
                 .put("mime_type", "audio/wav")
                 .put("data", Base64.encodeToString(Audio.toWavBytes(audio), Base64.NO_WRAP))))
-        return generate(key, model, null, parts, json = false).trim()
+        return generate(key, model, null, parts, json = false, fast = true).trim()
     }
 
-    fun text(key: String, model: String, system: String, user: String): String =
-        generate(key, model, system, JSONArray().put(JSONObject().put("text", user)), json = true)
+    fun text(key: String, model: String, system: String, user: String, fast: Boolean): String =
+        generate(key, model, system, JSONArray().put(JSONObject().put("text", user)), json = true, fast = fast)
 
     fun listModels(key: String): List<String> {
         val resp = Http.get("$BASE/models?pageSize=200", mapOf("x-goog-api-key" to key))

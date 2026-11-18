@@ -24,6 +24,8 @@ data class Segment(
     /** 文字起こし・整形に使ったモデル */
     val rawModel: String? = null,
     val formatModel: String? = null,
+    /** 頭の良いモデルで仕上げ直したか */
+    val polished: Boolean = false,
     val silent: Boolean = false,
     val error: String? = null,
 )
@@ -119,6 +121,7 @@ object Repo {
                     g.formatted?.let { put("formatted", it) }
                     g.rawModel?.let { put("rawModel", it) }
                     g.formatModel?.let { put("formatModel", it) }
+                    put("polished", g.polished)
                     put("silent", g.silent)
                     g.error?.let { put("error", it) }
                 })
@@ -151,6 +154,7 @@ object Repo {
                     formatted = g.optStr("formatted"),
                     rawModel = g.optStr("rawModel"),
                     formatModel = g.optStr("formatModel"),
+                    polished = g.optBoolean("polished"),
                     silent = g.optBoolean("silent"),
                     error = g.optStr("error"),
                 )
@@ -174,6 +178,10 @@ object Live {
         val level: Float = 0f,
         /** 端末内の文字起こしの途中結果 */
         val partial: String = "",
+        /** いまの区間で確定した文字（端末内） */
+        val liveText: String = "",
+        /** いまの区間を始めた時刻（端末の時計） */
+        val chunkStartedAt: Long = 0,
         /** いま使っている方法 */
         val engine: String = "",
         val error: String? = null,

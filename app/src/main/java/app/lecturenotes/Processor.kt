@@ -20,6 +20,7 @@ import org.json.JSONObject
 object Processor {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val wakeCh = Channel<Unit>(Channel.CONFLATED)
+    private val polishWakeCh = Channel<Unit>(Channel.CONFLATED)
     private lateinit var app: Context
     private val settings: Settings get() = Settings(app)
 
@@ -27,7 +28,10 @@ object Processor {
     val status = MutableStateFlow("")
 
     /** 失敗した回数（区間ごと） */
-    private val failures = HashMap<String, Int>()
+    private val failures = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /** 仕上げの状態（画面に出す） */
+    val polishStatus = MutableStateFlow("")
 
     fun start(context: Context) {
         app = context.applicationContext
@@ -37,10 +41,12 @@ object Processor {
             },
         )
         scope.launch { loop() }
+        scope.launch { polishLoop() }
     }
 
     fun wake() {
         wakeCh.trySend(Unit)
+        polishWakeCh.trySend(Unit)
     }
 
     private suspend fun loop() {
@@ -73,14 +79,18 @@ object Processor {
     private fun needsStt(seg: Segment): Boolean {
         if (seg.silent || seg.rawEngine == "error") return false
         if (seg.raw == null) return settings.mode != Mode.LOCAL
-        // 自動のときは、端末内で起こした分をクラウドで起こし直す
-        return seg.rawEngine == "local" && settings.mode == Mode.AUTO
+        // 端末内で起こした分（その場の表示用）は、クラウドで起こし直す
+        return seg.rawEngine == "local" && settings.mode != Mode.LOCAL
     }
 
-    fun pendingCounts(s: Session): Pair<Int, Int> {
+    data class Pending(val stt: Int, val fast: Int, val polish: Int)
+
+    fun pendingCounts(s: Session): Pending {
+        val st = settings
         val stt = s.segments.count { needsStt(it) }
-        val fmt = if (!settings.formatEnabled) 0 else s.segments.count { !it.silent && it.formatted == null && !it.raw.isNullOrBlank() }
-        return stt to fmt
+        val fmt = if (!st.formatEnabled) 0 else s.segments.count { !it.silent && it.formatted == null && !it.raw.isNullOrBlank() }
+        val pol = if (!st.formatEnabled || !st.polishEnabled) 0 else s.segments.count { !it.silent && !it.polished && !it.raw.isNullOrBlank() }
+        return Pending(stt, fmt, pol)
     }
 
     // ---------- 1回分の仕事 ----------
@@ -238,7 +248,9 @@ object Processor {
             if (g.formatted != null) break
             if (g.raw.isBlank()) continue
             batch.add(g)
-            if (batch.size >= settings.formatBatch.coerceIn(1, 20)) return batch
+            // 録音中はすぐ出すため少しずつ、録音が終わっていればまとめて
+            val size = if (s.recording) settings.formatBatch.coerceIn(1, 20) else maxOf(settings.formatBatch, 6)
+            if (batch.size >= size) return batch
         }
         if (batch.isEmpty()) return null
         // 録音中は、決まった数たまるまで待つ。録音が終わっていれば残りも整形する
@@ -255,15 +267,15 @@ object Processor {
         val system = Prompts.formatSystem(glossary)
         val user = Prompts.formatUser(context, batch.map { it.raw ?: "" })
 
-        for (c in usable(Role.FORMAT)) {
+        for (c in usable(Role.FAST)) {
             status.value = "${c.model} で整形中（${fmtClock(batch.first().startMs)}〜）"
             try {
                 val out = when (c.provider) {
-                    "groq" -> Groq.chat(settings.groqKey, c.model, system, user)
-                    else -> Gemini.text(settings.geminiKey, c.model, system, user)
+                    "groq" -> Groq.chat(settings.groqKey, c.model, system, user, fast = true)
+                    else -> Gemini.text(settings.geminiKey, c.model, system, user, fast = true)
                 }
                 Usage.add(c.key)
-                applyFormatted(s, batch, out, c)
+                applyFormatted(s, batch, out, c, polished = false)
                 return Outcome.DONE
             } catch (e: RateLimited) {
                 Cooldown.set(c.key, e.waitMs, "${c.model}: ${e.message?.take(120)}")
@@ -287,22 +299,107 @@ object Processor {
         failures[k] = n
         if (n >= 4) {
             // 整形できなかったら、文字起こしのまま残す
-            batch.forEach { g -> Repo.updateSegment(s.id, g.index) { it.copy(formatted = it.raw, formatModel = "（整形できず）") } }
+            batch.forEach { g -> Repo.updateSegment(s.id, g.index) { it.copy(formatted = it.raw, formatModel = "（整形できず）", polished = true) } }
             return true
         }
         // 結果の形が崩れていた（頭の弱いモデルで起こりやすい）ときは、次のモデルで試す
         return false
     }
 
-    private fun applyFormatted(s: Session, batch: List<Segment>, output: String, c: Cand) {
+    private fun applyFormatted(s: Session, batch: List<Segment>, output: String, c: Cand, polished: Boolean) {
         val list = parseSegments(output) ?: throw IllegalStateException("整形の結果を読めません: ${output.take(120)}")
         val texts = if (list.size == batch.size) list else {
             // 数が合わないときは、まとめて最初の区間に入れる
             listOf(list.joinToString("")) + List(batch.size - 1) { "" }
         }
         batch.forEachIndexed { i, g ->
-            Repo.updateSegment(s.id, g.index) { it.copy(formatted = texts[i].trim(), formatModel = c.model) }
+            Repo.updateSegment(s.id, g.index) {
+                // 送っている間に文字起こしがやり直されていたら使わない
+                if (it.raw != g.raw) it else it.copy(formatted = texts[i].trim(), formatModel = c.model, polished = polished)
+            }
         }
+    }
+
+    // ---------- 仕上げ（頭の良いモデルで、裏でゆっくり直し直す） ----------
+
+    private suspend fun polishLoop() {
+        while (true) {
+            val worked = try {
+                polishStep()
+            } catch (e: Exception) {
+                polishStatus.value = "仕上げ: ${e.message?.take(120)}"
+                false
+            }
+            if (!worked) withTimeoutOrNull(30_000) { polishWakeCh.receive() }
+        }
+    }
+
+    private fun polishBatchOf(s: Session): List<Segment>? {
+        val size = settings.polishBatch.coerceIn(2, 30)
+        val segs = s.segments
+        val first = segs.indexOfFirst { !it.silent && !it.polished && it.formatted != null && !it.raw.isNullOrBlank() && !needsStt(it) }
+        if (first < 0) return null
+        val batch = ArrayList<Segment>()
+        for (i in first until segs.size) {
+            val g = segs[i]
+            if (g.silent || g.rawEngine == "error" || g.raw.isNullOrBlank()) continue
+            if (needsStt(g) || g.formatted == null || g.polished) break
+            batch.add(g)
+            if (batch.size >= size) return batch
+        }
+        if (batch.isEmpty() || s.recording) return null
+        return batch
+    }
+
+    private fun polishStep(): Boolean {
+        val st = settings
+        if (!st.formatEnabled || !st.polishEnabled || !Net.online(app)) {
+            polishStatus.value = ""
+            return false
+        }
+        for (s in Repo.sessions.value.sortedByDescending { it.recording }) {
+            val batch = polishBatchOf(s) ?: continue
+            val glossary = Glossary.load(app)
+            val firstIdx = s.segments.indexOfFirst { it.index == batch.first().index }
+            val context = s.segments.take(firstIdx.coerceAtLeast(0))
+                .mapNotNull { it.formatted ?: it.raw }.joinToString("").takeLast(800)
+            val system = Prompts.formatSystem(glossary)
+            val user = Prompts.formatUser(context, batch.map { it.raw ?: "" })
+            val cands = Catalog.candidates(app, st, Role.POLISH).filter { Cooldown.ok(it.key) }
+            if (cands.isEmpty()) {
+                polishStatus.value = "仕上げ：使えるモデルが休み中"
+                return false
+            }
+            for (c in cands) {
+                polishStatus.value = "${c.model} で仕上げ中（${fmtClock(batch.first().startMs)}〜）"
+                try {
+                    val out = Gemini.text(st.geminiKey, c.model, system, user, fast = false)
+                    Usage.add(c.key)
+                    applyFormatted(s, batch, out, c, polished = true)
+                    polishStatus.value = ""
+                    return true
+                } catch (e: RateLimited) {
+                    Cooldown.set(c.key, e.waitMs, "${c.model}: ${e.message?.take(120)}")
+                } catch (e: Exception) {
+                    if (e is HttpError && e.code in listOf(400, 401, 403, 404)) {
+                        Cooldown.set(c.key, 30 * 60_000L, "${c.model}: ${e.message?.take(120)}")
+                        continue
+                    }
+                    val k = "pol:${s.id}/${batch.first().index}"
+                    val n = (failures[k] ?: 0) + 1
+                    failures[k] = n
+                    if (n >= 3) {
+                        // 仕上げをあきらめて、すぐの整形のまま残す
+                        batch.forEach { g -> Repo.updateSegment(s.id, g.index) { it.copy(polished = true) } }
+                        return true
+                    }
+                    polishStatus.value = "${c.model} 仕上げ: ${e.message?.take(100)}"
+                }
+            }
+            return false
+        }
+        polishStatus.value = ""
+        return false
     }
 
     private fun parseSegments(text: String): List<String>? {

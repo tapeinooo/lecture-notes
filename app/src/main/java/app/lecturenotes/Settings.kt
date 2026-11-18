@@ -50,13 +50,23 @@ class Settings(context: Context) {
 
     /** 自動で選ばないときの順番（1行に「groq:モデル名」か「gemini:モデル名」） */
     var manualStt by str("manualStt", Catalog.DEFAULT_MANUAL_STT)
-    var manualFormat by str("manualFormat", Catalog.DEFAULT_MANUAL_FORMAT)
+    var manualFormat by str("manualFast", Catalog.DEFAULT_MANUAL_FAST)
+    var manualPolish by str("manualPolish", Catalog.DEFAULT_MANUAL_POLISH)
 
-    /** 音声を区切る長さ（秒） */
-    var chunkSeconds by int("chunkSeconds", 30)
+    /** 音声を区切る目安の長さ（秒）。この長さを過ぎたら、話の切れ目で区切る */
+    var chunkSeconds by int("chunkSec2", 15)
 
-    /** 何区間ずつまとめて整形するか */
-    var formatBatch by int("formatBatch", 4)
+    /** すぐの整形を何区間ずつまとめるか */
+    var formatBatch by int("fastBatch", 2)
 
     var formatEnabled by bool("formatEnabled", true)
+
+    /** 頭の良いモデルで仕上げ直す */
+    var polishEnabled by bool("polishEnabled", true)
+
+    /** 仕上げを何区間ずつまとめるか */
+    var polishBatch by int("polishBatch", 8)
+
+    /** 端末内の音声認識で、その場で文字を出す（クラウドの結果が来たら置き換える） */
+    var livePreview by bool("livePreview", true)
 }

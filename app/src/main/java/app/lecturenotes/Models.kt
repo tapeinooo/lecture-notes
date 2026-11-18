@@ -26,12 +26,17 @@ data class Cand(val provider: String, val model: String) {
     }
 }
 
-enum class Role(val label: String) { STT("聞き取り（文字起こし）"), FORMAT("整形") }
+enum class Role(val label: String) {
+    STT("聞き取り（文字起こし）"),
+    FAST("すぐの整形"),
+    POLISH("仕上げ"),
+}
 
 /**
  * 使えるモデルの一覧を取ってきて、役割ごとに順番を付ける。
  *  - 聞き取り：音声を聞けて、速く、1日の回数が多いもの（Groq の Whisper → Gemini の Flash 系）。
- *  - 整形：頭の良いものから（Gemini Pro → Flash → Groq の大きなモデル → Gemma）。
+ *  - すぐの整形：速いもの（考える時間を切った Gemini Flash-Lite・Flash、Groq）。数秒で返す。
+ *  - 仕上げ：頭の良いもの（Gemini Pro・新しい Flash）。裏でゆっくり直し直す。
  * 上から使い、制限にかかったら次へ。制限が戻ればまた上を使う。
  */
 object Catalog {
@@ -53,12 +58,17 @@ gemini:gemini-2.5-flash
 gemini:gemini-2.5-flash-lite
 """.trim()
 
-    val DEFAULT_MANUAL_FORMAT = """
-gemini:gemini-2.5-pro
-gemini:gemini-2.5-flash
+    val DEFAULT_MANUAL_FAST = """
+gemini:gemini-2.5-flash-lite
 groq:moonshotai/kimi-k2-instruct
 groq:openai/gpt-oss-120b
+gemini:gemini-2.5-flash
 gemini:gemma-3-27b-it
+""".trim()
+
+    val DEFAULT_MANUAL_POLISH = """
+gemini:gemini-2.5-pro
+gemini:gemini-2.5-flash
 """.trim()
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE)
@@ -143,11 +153,19 @@ gemini:gemma-3-27b-it
         Tier.PRO -> g.version * 10 + 1
     } - if (g.unstable) 0.5 else 0.0
 
-    private fun formatScore(g: GInfo): Double = when (g.tier) {
+    /** すぐの整形：速さ優先（Pro は遅いので使わない） */
+    private fun fastScore(g: GInfo): Double = when (g.tier) {
         Tier.GEMMA -> 10.0 + g.sizeB / 4.0
+        Tier.PRO -> -1.0
+        Tier.LITE -> g.version * 10 + 5
+        Tier.FLASH -> g.version * 10 + 3
+    } - if (g.unstable) 0.5 else 0.0
+
+    /** 仕上げ：頭の良さ優先 */
+    private fun polishScore(g: GInfo): Double = when (g.tier) {
+        Tier.GEMMA, Tier.LITE -> -1.0
         Tier.PRO -> g.version * 10 + 6
         Tier.FLASH -> g.version * 10 + 3
-        Tier.LITE -> g.version * 10
     } - if (g.unstable) 0.5 else 0.0
 
     private val GROQ_CHAT_PREF = listOf("kimi-k2", "gpt-oss-120b", "llama-4-maverick", "qwen3", "llama-3.3-70b", "gpt-oss-20b")
@@ -165,23 +183,30 @@ gemini:gemma-3-27b-it
                     .map { Cand("gemini", it.name) }
                 g + m
             }
-            Role.FORMAT -> {
-                val gm = gem.filter { it.tier != Tier.GEMMA }.sortedByDescending { formatScore(it) }.take(6)
+            Role.FAST -> {
+                val gm = gem.filter { it.tier != Tier.GEMMA && fastScore(it) > 0 }.sortedByDescending { fastScore(it) }
                     .map { Cand("gemini", it.name) }
                 val gq = groq.filter { id -> GROQ_EXCLUDE.none { id.contains(it) } }
                     .sortedBy { id -> GROQ_CHAT_PREF.indexOfFirst { id.contains(it) }.let { if (it < 0) 99 else it } }
                     .take(3).map { Cand("groq", it) }
-                val gemma = gem.filter { it.tier == Tier.GEMMA }.sortedByDescending { formatScore(it) }.take(2)
+                val gemma = gem.filter { it.tier == Tier.GEMMA }.sortedByDescending { fastScore(it) }.take(2)
                     .map { Cand("gemini", it.name) }
-                gm + gq + gemma
+                // 速い Gemini 2つ → Groq → 残りの Gemini → Gemma
+                gm.take(2) + gq + gm.drop(2).take(3) + gemma
             }
+            Role.POLISH -> gem.filter { polishScore(it) > 0 }.sortedByDescending { polishScore(it) }.take(5)
+                .map { Cand("gemini", it.name) }
         }
     }
 
     /** 実際に使う順番（設定の「自動で選ぶ」・文字起こしの方法・キーの有無を反映） */
     fun candidates(ctx: Context, st: Settings, role: Role): List<Cand> {
         val base = if (st.autoModels) ranked(ctx, role) else {
-            (if (role == Role.STT) st.manualStt else st.manualFormat).lines().mapNotNull { Cand.parse(it) }
+            when (role) {
+                Role.STT -> st.manualStt
+                Role.FAST -> st.manualFormat
+                Role.POLISH -> st.manualPolish
+            }.lines().mapNotNull { Cand.parse(it) }
         }
         return base.filter { c ->
             when (c.provider) {

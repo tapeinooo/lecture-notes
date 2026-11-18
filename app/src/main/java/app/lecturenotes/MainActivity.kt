@@ -251,6 +251,7 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
     val sessions by Repo.sessions.collectAsState()
     val live by Live.state.collectAsState()
     val status by Processor.status.collectAsState()
+    val polishStatus by Processor.polishStatus.collectAsState()
     val s = sessions.firstOrNull { it.id == id }
     if (s == null) {
         LaunchedEffect(Unit) { onBack() }
@@ -294,7 +295,7 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
             last >= info.totalItemsCount - 2
         }
     }
-    LaunchedEffect(rows.size, live.partial) {
+    LaunchedEffect(rows.size, live.partial, live.liveText) {
         if (isRec && atBottom && listState.layoutInfo.totalItemsCount > 0) {
             listState.scrollToItem(listState.layoutInfo.totalItemsCount - 1)
         }
@@ -327,13 +328,13 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
                     })
                     DropdownMenuItem(text = { Text("整形をやり直す（全部）") }, onClick = {
                         menu = false
-                        Repo.update(id) { ss -> ss.copy(segments = ss.segments.map { it.copy(formatted = null) }) }
+                        Repo.update(id) { ss -> ss.copy(segments = ss.segments.map { it.copy(formatted = null, polished = false) }) }
                         Processor.wake()
                     })
                     DropdownMenuItem(text = { Text("文字起こしからやり直す（全部）") }, onClick = {
                         menu = false
                         Repo.update(id) { ss ->
-                            ss.copy(segments = ss.segments.map { it.copy(raw = null, rawEngine = null, formatted = null, error = null) })
+                            ss.copy(segments = ss.segments.map { it.copy(raw = null, rawEngine = null, formatted = null, polished = false, error = null) })
                         }
                         Processor.wake()
                     })
@@ -355,8 +356,8 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
                     is Row_.Seg -> SegmentRow(row.seg) { selected = row.seg }
                 }
             }
-            if (isRec && live.partial.isNotBlank()) {
-                item { Text(live.partial, color = MaterialTheme.colorScheme.outline, modifier = Modifier.padding(vertical = 6.dp)) }
+            if (isRec) {
+                item { LiveBlock(live, now) }
             }
             if (rows.isEmpty() && !isRec) {
                 item { Text("まだ録音がありません", color = MaterialTheme.colorScheme.outline, modifier = Modifier.padding(16.dp)) }
@@ -365,9 +366,10 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
 
         HorizontalDivider()
         Column(Modifier.fillMaxWidth().padding(12.dp)) {
-            val (sttWait, fmtWait) = Processor.pendingCounts(s)
+            val p = Processor.pendingCounts(s)
             Text(
-                "文字起こし待ち $sttWait・整形待ち $fmtWait　$status",
+                "清書待ち ${p.stt}・整形待ち ${p.fast}・仕上げ待ち ${p.polish}　$status" +
+                    (if (polishStatus.isNotEmpty()) "　$polishStatus" else ""),
                 style = MaterialTheme.typography.labelSmall,
                 maxLines = 2,
             )
@@ -436,12 +438,12 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
                     OutlinedTextField(value = edit, onValueChange = { edit = it }, label = { Text("整形後（直せます）") })
                     Spacer(Modifier.height(8.dp))
                     TextButton(onClick = {
-                        Repo.updateSegment(id, g.index) { it.copy(raw = null, rawEngine = null, formatted = null, error = null, silent = false) }
+                        Repo.updateSegment(id, g.index) { it.copy(raw = null, rawEngine = null, formatted = null, polished = false, error = null, silent = false) }
                         Processor.wake()
                         selected = null
                     }) { Text("文字起こしからやり直す") }
                     TextButton(onClick = {
-                        Repo.updateSegment(id, g.index) { it.copy(formatted = null) }
+                        Repo.updateSegment(id, g.index) { it.copy(formatted = null, polished = false) }
                         Processor.wake()
                         selected = null
                     }) { Text("整形だけやり直す") }
@@ -493,12 +495,37 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
     }
 }
 
+/** 録音中の、まだ区切られていない部分 */
+@Composable
+private fun LiveBlock(live: Live.State, now: Long) {
+    val sec = if (live.chunkStartedAt > 0) ((now - live.chunkStartedAt) / 1000).coerceAtLeast(0) else 0
+    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Text(
+            "● いま（${sec}秒）" + if (live.liveText.isNotBlank() || live.partial.isNotBlank()) "　端末内（仮）" else "",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+        val text = (live.liveText + " " + live.partial).trim()
+        if (text.isNotEmpty()) {
+            Text(text, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else {
+            Text(
+                "聞き取り中…（区切りごとにクラウドで文字にします）",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
+        }
+    }
+}
+
 @Composable
 private fun SegmentRow(g: Segment, onClick: () -> Unit) {
     val linkColor = MaterialTheme.colorScheme.primary
     Column(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 6.dp)) {
         val tag = when {
+            g.formatted != null && g.polished -> "仕上げ済み" + (g.formatModel?.let { "（$it）" } ?: "")
             g.formatted != null -> "整形済み" + (g.formatModel?.let { "（$it）" } ?: "")
+            g.rawEngine == "local" -> "端末内（仮）"
             g.raw != null -> engineLabel(g.rawEngine, g.rawModel)
             else -> ""
         }
@@ -507,7 +534,7 @@ private fun SegmentRow(g: Segment, onClick: () -> Unit) {
         when {
             g.silent -> Text("（無音）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
             g.rawEngine == "error" -> Text("文字起こしできませんでした（押すとやり直せます）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-            text == null -> Text("文字起こし待ち…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+            text == null || (text.isBlank() && g.rawEngine == "local") -> Text("文字起こし中…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
             text.isBlank() -> Text("（文字なし）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
             else -> Text(
                 Scripture.annotate(text, linkColor),
@@ -533,6 +560,9 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
     var autoModels by remember { mutableStateOf(st.autoModels) }
     var manualStt by remember { mutableStateOf(st.manualStt) }
     var manualFormat by remember { mutableStateOf(st.manualFormat) }
+    var manualPolish by remember { mutableStateOf(st.manualPolish) }
+    var polishOn by remember { mutableStateOf(st.polishEnabled) }
+    var liveOn by remember { mutableStateOf(st.livePreview) }
     var catalogMsg by remember { mutableStateOf("") }
     var tick by remember { mutableStateOf(0) }
     var chunk by remember { mutableStateOf(st.chunkSeconds.toString()) }
@@ -615,7 +645,11 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
                 )
                 OutlinedTextField(
                     value = manualFormat, onValueChange = { manualFormat = it; st.manualFormat = it },
-                    label = { Text(Role.FORMAT.label) }, modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    label = { Text(Role.FAST.label) }, modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                )
+                OutlinedTextField(
+                    value = manualPolish, onValueChange = { manualPolish = it; st.manualPolish = it },
+                    label = { Text(Role.POLISH.label) }, modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
                 )
             }
             key(tick, autoModels, mode, groqKey, geminiKey) {
@@ -627,12 +661,37 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
                 Switch(checked = formatOn, onCheckedChange = { formatOn = it; st.formatEnabled = it; Processor.wake() })
                 Text("AI で整形する", Modifier.padding(start = 8.dp))
             }
-            Field("何区間ずつまとめて整形するか", batch, KeyboardType.Number) {
+            Text(
+                "清書（クラウドの文字起こし）が来たら、速いモデルですぐ整形し、あとから頭の良いモデルで仕上げ直します。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = polishOn, onCheckedChange = { polishOn = it; st.polishEnabled = it; Processor.wake() })
+                Text("頭の良いモデルで仕上げ直す", Modifier.padding(start = 8.dp))
+            }
+            Field("すぐの整形を何区間ずつまとめるか", batch, KeyboardType.Number) {
                 batch = it; it.toIntOrNull()?.let { v -> st.formatBatch = v.coerceIn(1, 20) }
             }
-            Field("音声を区切る長さ（秒・10〜120）", chunk, KeyboardType.Number) {
-                chunk = it; it.toIntOrNull()?.let { v -> st.chunkSeconds = v.coerceIn(10, 120) }
+
+            Section("その場の表示")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = liveOn, onCheckedChange = { liveOn = it; st.livePreview = it })
+                Text("端末内の音声認識で、その場で文字を出す", Modifier.padding(start = 8.dp))
             }
+            Text(
+                "話した直後に文字が出ます（Android 13 以上）。区切りごとにクラウドの清書で置き換わります。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
+            Field("清書に送る区切りの目安（秒・5〜120）", chunk, KeyboardType.Number) {
+                chunk = it; it.toIntOrNull()?.let { v -> st.chunkSeconds = v.coerceIn(5, 120) }
+            }
+            Text(
+                "短いほど清書が早く出ますが、無料枠の回数を多く使います。目安を過ぎたら話の切れ目で区切ります。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
             OutlinedButton(onClick = onGlossary) { Text("用語集を編集する") }
 
             Section("その他")

@@ -117,16 +117,19 @@ class RecorderService : Service() {
     // ---------- 端末内の文字起こしの出し入れ ----------
 
     private fun updateLocal() {
-        val want = Processor.shouldUseLocal() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+        // その場の表示のため、端末内の音声認識はできるだけ動かしておく（クラウドの結果が来たら置き換える）
+        val want = (settings.livePreview || Processor.shouldUseLocal()) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
         if (want && local == null) startLocal()
         if (!want && local != null) stopLocal()
         Live.state.update { st -> st.copy(
-            engine = when {
-                local?.active == true -> "端末内"
-                settings.mode == Mode.LOCAL -> "端末内（使えません）"
-                Processor.cloudSttAvailable() -> "クラウド（${settings.mode.label}）"
-                else -> "録音のみ（あとで文字起こし）"
-            },
+            engine = listOfNotNull(
+                if (local?.active == true) "その場：端末内" else null,
+                when {
+                    settings.mode == Mode.LOCAL -> if (local?.active == true) null else "端末内（使えません）"
+                    Processor.cloudSttAvailable() -> "清書：クラウド"
+                    else -> "清書：あとで"
+                },
+            ).joinToString("・"),
         ) }
     }
 
@@ -134,7 +137,10 @@ class RecorderService : Service() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
         val r = LocalRecognizer(
             this,
-            onFinal = { t -> synchronized(localText) { localText.append(t).append(' ') } },
+            onFinal = { t ->
+                synchronized(localText) { localText.append(t).append(' ') }
+                Live.state.update { it.copy(liveText = (it.liveText + " " + t).trim(), partial = "") }
+            },
             onPartial = { t -> Live.state.update { it.copy(partial = t) } },
             onError = { msg -> Live.state.update { it.copy(error = msg) } },
         )
@@ -176,15 +182,19 @@ class RecorderService : Service() {
         var index = (session.segments.maxOfOrNull { it.index } ?: 0) + 1
 
         while (running) {
-            val chunkSamples = settings.chunkSeconds.coerceIn(10, 120) * SAMPLE_RATE
+            // 目安の長さを過ぎたら、話の切れ目（静かな 0.1 秒）で区切る。切れ目がなければ 1.5 倍で区切る
+            val targetSamples = settings.chunkSeconds.coerceIn(5, 120) * SAMPLE_RATE
+            val maxSamples = targetSamples * 3 / 2
             val writer = Audio.newChunk(Repo.audioDir(id), index)
             val name = writer.file.name
             var samples = 0
             var loudFrames = 0
             var frames = 0
+            var rmsSum = 0.0
             synchronized(localText) { localText.setLength(0) }
+            Live.state.update { it.copy(liveText = "", chunkStartedAt = System.currentTimeMillis()) }
 
-            while (running && samples < chunkSamples) {
+            while (running && samples < maxSamples) {
                 val n = rec.read(buf, 0, buf.size)
                 if (n <= 0) continue
                 writer.write(buf, n)
@@ -194,8 +204,13 @@ class RecorderService : Service() {
                 for (i in 0 until n) sum += buf[i].toDouble() * buf[i]
                 val rms = sqrt(sum / n)
                 frames++
+                rmsSum += rms
                 if (rms > 250) loudFrames++
                 Live.state.update { it.copy(level = (rms / 4000.0).coerceIn(0.0, 1.0).toFloat()) }
+                if (samples >= targetSamples) {
+                    val avg = rmsSum / frames
+                    if (rms < maxOf(150.0, avg * 0.35)) break
+                }
             }
             runCatching { writer.close() }
 
