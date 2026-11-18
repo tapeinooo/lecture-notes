@@ -29,20 +29,22 @@ object Export {
     fun markdown(s: Session): String = buildString {
         append("# ${s.title}\n\n")
         append("${fmtDate(s.startedAt)}　録音 ${fmtClock(s.durationMs)}\n\n")
-        val marks = s.marks.sortedBy { it.timeMs }.toMutableList()
-        for (g in s.segments) {
-            while (marks.isNotEmpty() && marks.first().timeMs < g.startMs) {
-                val m = marks.removeAt(0)
-                append("> ★ [${fmtClock(m.timeMs)}] ${m.note}\n\n")
-            }
-            val text = (g.formatted ?: g.raw)?.trim().orEmpty()
-            if (g.silent || text.isEmpty()) continue
-            append("[${fmtClock(g.startMs)}] $text\n\n")
+        for (p in Transcript.paragraphs(s)) {
+            val body = p.pieces.joinToString("") { pc ->
+                when (pc.kind) {
+                    Transcript.Kind.MARK -> " **【★ ${fmtClock(pc.mark?.timeMs ?: 0)} ${pc.mark?.note ?: ""}】** "
+                    Transcript.Kind.PENDING -> "…"
+                    else -> pc.text
+                }
+            }.trim()
+            if (body.isEmpty()) continue
+            append("`${fmtClock(p.startMs)}` $body\n\n")
         }
-        marks.forEach { m -> append("> ★ [${fmtClock(m.timeMs)}] ${m.note}\n\n") }
         // 聖句の参照の一覧
-        val refs = s.segments.flatMap { g -> Scripture.find(g.formatted ?: g.raw ?: "").map { r -> (g.formatted ?: g.raw ?: "").substring(r.start, r.end) to Scripture.url(r.book, r.chapter) } }
-            .distinctBy { it.first }
+        val refs = s.segments.flatMap { g ->
+            val t = displayText(g) ?: ""
+            Scripture.find(t).map { r -> t.substring(r.start, r.end) to Scripture.url(r.book, r.chapter) }
+        }.distinctBy { it.first }
         if (refs.isNotEmpty()) {
             append("---\n\n## 出てきた聖句\n\n")
             refs.forEach { (label, url) -> append("- [$label]($url)\n") }

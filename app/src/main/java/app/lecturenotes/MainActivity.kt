@@ -13,6 +13,14 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withStyle
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -239,11 +247,6 @@ private fun UpdateBanner() {
 
 // ---------------- 記録 ----------------
 
-private sealed interface Row_ {
-    data class Seg(val seg: Segment) : Row_
-    data class Mk(val mark: Mark) : Row_
-}
-
 @Composable
 fun DetailScreen(id: String, onBack: () -> Unit) {
     val context = LocalContext.current
@@ -275,17 +278,8 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
     var renaming by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf<String?>(null) }
 
-    val rows = remember(s) {
-        val marks = s.marks.sortedBy { it.timeMs }
-        val out = ArrayList<Row_>()
-        var mi = 0
-        for (g in s.segments) {
-            while (mi < marks.size && marks[mi].timeMs < g.startMs) out.add(Row_.Mk(marks[mi++]))
-            out.add(Row_.Seg(g))
-        }
-        while (mi < marks.size) out.add(Row_.Mk(marks[mi++]))
-        out
-    }
+    var learned by remember { mutableStateOf<Pair<Int, List<Corrections.Fix>>?>(null) }
+    val rows = remember(s) { Transcript.paragraphs(s) }
 
     val listState = rememberLazyListState()
     val atBottom by remember {
@@ -345,16 +339,8 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
         }
 
         LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp), state = listState) {
-            items(rows) { row ->
-                when (row) {
-                    is Row_.Mk -> Text(
-                        "★ ${fmtClock(row.mark.timeMs)}  ${row.mark.note}",
-                        color = MaterialTheme.colorScheme.tertiary,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(vertical = 6.dp),
-                    )
-                    is Row_.Seg -> SegmentRow(row.seg) { selected = row.seg }
-                }
+            items(rows) { para ->
+                ParaView(para) { selected = it }
             }
             if (isRec) {
                 item { LiveBlock(live, now) }
@@ -425,25 +411,46 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
 
     selected?.let { g0 ->
         val g = s.segments.firstOrNull { it.index == g0.index } ?: g0
-        var edit by remember(g.index) { mutableStateOf(g.formatted ?: g.raw ?: "") }
+        val before = displayText(g) ?: ""
+        var edit by remember(g.index) { mutableStateOf(before) }
+        val pos = s.segments.indexOfFirst { it.index == g.index }
+        val prev = s.segments.getOrNull(pos - 1)?.let { displayText(it) }?.takeLast(60)
+        val next = s.segments.getOrNull(pos + 1)?.let { displayText(it) }?.take(60)
         AlertDialog(
             onDismissRequest = { selected = null },
-            title = { Text("${fmtClock(g.startMs)}〜${fmtClock(g.endMs)}") },
+            title = { Text("直す（${fmtClock(g.startMs)}〜${fmtClock(g.endMs)}）") },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
+                    if (!prev.isNullOrBlank()) Text("…$prev", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                    OutlinedTextField(
+                        value = edit, onValueChange = { edit = it },
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    )
+                    if (!next.isNullOrBlank()) Text("$next…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                    Text(
+                        "空行を入れると、そこで段落が分かれます。直したところは AI が上書きせず、直し方を覚えてこの先の文字起こし・整形に使います。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                    Spacer(Modifier.height(8.dp))
                     Text("文字起こし（${engineLabel(g.rawEngine, g.rawModel)}）", style = MaterialTheme.typography.labelMedium)
                     Text(g.raw ?: "（まだ）", style = MaterialTheme.typography.bodySmall)
                     g.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(value = edit, onValueChange = { edit = it }, label = { Text("整形後（直せます）") })
-                    Spacer(Modifier.height(8.dp))
+                    if (g.edited != null) {
+                        TextButton(onClick = {
+                            Repo.updateSegment(id, g.index) { it.copy(edited = null) }
+                            Processor.wake()
+                            selected = null
+                        }) { Text("自分の直しをやめて AI の文に戻す") }
+                    }
                     TextButton(onClick = {
-                        Repo.updateSegment(id, g.index) { it.copy(raw = null, rawEngine = null, formatted = null, polished = false, error = null, silent = false) }
+                        Repo.updateSegment(id, g.index) { it.copy(raw = null, rawEngine = null, formatted = null, polished = false, edited = null, error = null, silent = false) }
                         Processor.wake()
                         selected = null
                     }) { Text("文字起こしからやり直す") }
                     TextButton(onClick = {
-                        Repo.updateSegment(id, g.index) { it.copy(formatted = null, polished = false) }
+                        Repo.updateSegment(id, g.index) { it.copy(formatted = null, polished = false, edited = null) }
                         Processor.wake()
                         selected = null
                     }) { Text("整形だけやり直す") }
@@ -451,11 +458,58 @@ fun DetailScreen(id: String, onBack: () -> Unit) {
             },
             confirmButton = {
                 Button(onClick = {
-                    Repo.updateSegment(id, g.index) { it.copy(formatted = edit) }
+                    if (edit != before) {
+                        val fixes = Corrections.extract(before, edit)
+                        Repo.updateSegment(id, g.index) { it.copy(edited = edit) }
+                        if (fixes.isNotEmpty()) {
+                            Repo.update(id) { ss -> ss.copy(corrections = (ss.corrections + fixes.map { it.toString() }).distinct()) }
+                            learned = g.index to fixes
+                        }
+                        Processor.wake()
+                    }
                     selected = null
                 }) { Text("保存") }
             },
             dismissButton = { TextButton(onClick = { selected = null }) { Text("閉じる") } },
+        )
+    }
+
+    learned?.let { (segIndex, fixes) ->
+        val others = remember(fixes) { Corrections.countOthers(s, segIndex, fixes) }
+        var toGlossary by remember(fixes) { mutableStateOf(true) }
+        var toOthers by remember(fixes) { mutableStateOf(others > 0) }
+        AlertDialog(
+            onDismissRequest = { learned = null },
+            title = { Text("直し方を覚えました") },
+            text = {
+                Column {
+                    fixes.forEach { Text("・${it.from} → ${it.to}") }
+                    Text(
+                        "この記録のこの先の文字起こし・整形で、このとおりに直すよう AI に伝えます。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.padding(vertical = 4.dp),
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Switch(checked = toGlossary, onCheckedChange = { toGlossary = it })
+                        Text("用語集にも足す（ほかの記録でも使う）", Modifier.padding(start = 8.dp))
+                    }
+                    if (others > 0) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Switch(checked = toOthers, onCheckedChange = { toOthers = it })
+                            Text("すでにある同じ誤り（${others}か所）も直す", Modifier.padding(start = 8.dp))
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (toGlossary) Glossary.append(context, fixes.map { it.toString() }, "直したところから")
+                    if (toOthers) Corrections.applyToOthers(id, segIndex, fixes)
+                    learned = null
+                }) { Text("OK") }
+            },
+            dismissButton = { TextButton(onClick = { learned = null }) { Text("この記録だけ") } },
         )
     }
 
@@ -501,16 +555,16 @@ private fun LiveBlock(live: Live.State, now: Long) {
     val sec = if (live.chunkStartedAt > 0) ((now - live.chunkStartedAt) / 1000).coerceAtLeast(0) else 0
     Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
         Text(
-            "● いま（${sec}秒）" + if (live.liveText.isNotBlank() || live.partial.isNotBlank()) "　端末内（仮）" else "",
+            "● 聞き取り中（${sec}秒）",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.error,
         )
         val text = (live.liveText + " " + live.partial).trim()
         if (text.isNotEmpty()) {
-            Text(text, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(text, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.outline, fontStyle = FontStyle.Italic)
         } else {
             Text(
-                "聞き取り中…（区切りごとにクラウドで文字にします）",
+                "…",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.outline,
             )
@@ -518,30 +572,55 @@ private fun LiveBlock(live: Live.State, now: Long) {
     }
 }
 
+/** 1つの段落。押したところの区間を直せる。聖句の参照を押すと wol.jw.org を開く */
 @Composable
-private fun SegmentRow(g: Segment, onClick: () -> Unit) {
-    val linkColor = MaterialTheme.colorScheme.primary
-    Column(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 6.dp)) {
-        val tag = when {
-            g.formatted != null && g.polished -> "仕上げ済み" + (g.formatModel?.let { "（$it）" } ?: "")
-            g.formatted != null -> "整形済み" + (g.formatModel?.let { "（$it）" } ?: "")
-            g.rawEngine == "local" -> "端末内（仮）"
-            g.raw != null -> engineLabel(g.rawEngine, g.rawModel)
-            else -> ""
+private fun ParaView(para: Transcript.Para, onEdit: (Segment) -> Unit) {
+    val uri = LocalUriHandler.current
+    val cs = MaterialTheme.colorScheme
+    val built = remember(para, cs) {
+        val segRanges = ArrayList<Triple<Int, Int, Segment>>()
+        val urlRanges = ArrayList<Triple<Int, Int, String>>()
+        val text = buildAnnotatedString {
+            for (p in para.pieces) {
+                val start = length
+                val style = when (p.kind) {
+                    Transcript.Kind.FINAL -> SpanStyle(color = cs.onSurface)
+                    Transcript.Kind.RAW -> SpanStyle(color = cs.onSurfaceVariant)
+                    Transcript.Kind.DRAFT -> SpanStyle(color = cs.outline, fontStyle = FontStyle.Italic)
+                    Transcript.Kind.PENDING -> SpanStyle(color = cs.outline)
+                    Transcript.Kind.MARK -> SpanStyle(color = cs.tertiary, fontWeight = FontWeight.Bold)
+                }
+                withStyle(style) { append(if (p.kind == Transcript.Kind.MARK) " ${p.text} " else p.text) }
+                if (p.kind != Transcript.Kind.MARK) {
+                    for (r in Scripture.find(p.text)) {
+                        addStyle(SpanStyle(color = cs.primary, textDecoration = TextDecoration.Underline), start + r.start, start + r.end)
+                        urlRanges.add(Triple(start + r.start, start + r.end, Scripture.url(r.book, r.chapter)))
+                    }
+                }
+                p.seg?.let { segRanges.add(Triple(start, length, it)) }
+            }
         }
-        Text("${fmtClock(g.startMs)}  $tag", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
-        val text = g.formatted ?: g.raw
-        when {
-            g.silent -> Text("（無音）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
-            g.rawEngine == "error" -> Text("文字起こしできませんでした（押すとやり直せます）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-            text == null || (text.isBlank() && g.rawEngine == "local") -> Text("文字起こし中…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
-            text.isBlank() -> Text("（文字なし）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
-            else -> Text(
-                Scripture.annotate(text, linkColor),
-                style = MaterialTheme.typography.bodyLarge,
-                color = if (g.formatted == null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
-            )
-        }
+        Triple(text, segRanges, urlRanges)
+    }
+    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        Text(fmtClock(para.startMs), style = MaterialTheme.typography.labelSmall, color = cs.outline)
+        Text(
+            built.first,
+            style = MaterialTheme.typography.bodyLarge,
+            onTextLayout = { layout = it },
+            modifier = Modifier.pointerInput(built) {
+                detectTapGestures { pos ->
+                    val off = layout?.getOffsetForPosition(pos) ?: return@detectTapGestures
+                    built.third.firstOrNull { off in it.first until it.second }?.let {
+                        uri.openUri(it.third)
+                        return@detectTapGestures
+                    }
+                    (built.second.firstOrNull { off in it.first until it.second } ?: built.second.lastOrNull { it.first <= off })
+                        ?.let { onEdit(it.third) }
+                }
+            },
+        )
     }
 }
 

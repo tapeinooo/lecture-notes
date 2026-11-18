@@ -26,6 +26,8 @@ data class Segment(
     val formatModel: String? = null,
     /** 頭の良いモデルで仕上げ直したか */
     val polished: Boolean = false,
+    /** 利用者が直した文（あれば AI は上書きしない） */
+    val edited: String? = null,
     val silent: Boolean = false,
     val error: String? = null,
 )
@@ -39,6 +41,8 @@ data class Session(
     val recording: Boolean,
     val segments: List<Segment>,
     val marks: List<Mark>,
+    /** この記録で利用者が直した「誤→正」（文字起こし・整形の参考にする） */
+    val corrections: List<String> = emptyList(),
 ) {
     val durationMs: Long get() = segments.lastOrNull()?.endMs ?: 0L
 }
@@ -122,11 +126,13 @@ object Repo {
                     g.rawModel?.let { put("rawModel", it) }
                     g.formatModel?.let { put("formatModel", it) }
                     put("polished", g.polished)
+                    g.edited?.let { put("edited", it) }
                     put("silent", g.silent)
                     g.error?.let { put("error", it) }
                 })
             }
         })
+        put("corrections", JSONArray(s.corrections))
         put("marks", JSONArray().apply {
             s.marks.forEach { m -> put(JSONObject().put("timeMs", m.timeMs).put("note", m.note)) }
         })
@@ -155,6 +161,7 @@ object Repo {
                     rawModel = g.optStr("rawModel"),
                     formatModel = g.optStr("formatModel"),
                     polished = g.optBoolean("polished"),
+                    edited = g.optStr("edited"),
                     silent = g.optBoolean("silent"),
                     error = g.optStr("error"),
                 )
@@ -163,6 +170,7 @@ object Repo {
                 val m = marks.getJSONObject(i)
                 Mark(m.getLong("timeMs"), m.optString("note"))
             },
+            corrections = j.optJSONArray("corrections")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList(),
         )
     }
 }

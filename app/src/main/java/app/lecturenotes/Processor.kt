@@ -77,7 +77,7 @@ object Processor {
     }
 
     private fun needsStt(seg: Segment): Boolean {
-        if (seg.silent || seg.rawEngine == "error") return false
+        if (seg.silent || seg.rawEngine == "error" || seg.edited != null) return false
         if (seg.raw == null) return settings.mode != Mode.LOCAL
         // 端末内で起こした分（その場の表示用）は、クラウドで起こし直す
         return seg.rawEngine == "local" && settings.mode != Mode.LOCAL
@@ -88,8 +88,8 @@ object Processor {
     fun pendingCounts(s: Session): Pending {
         val st = settings
         val stt = s.segments.count { needsStt(it) }
-        val fmt = if (!st.formatEnabled) 0 else s.segments.count { !it.silent && it.formatted == null && !it.raw.isNullOrBlank() }
-        val pol = if (!st.formatEnabled || !st.polishEnabled) 0 else s.segments.count { !it.silent && !it.polished && !it.raw.isNullOrBlank() }
+        val fmt = if (!st.formatEnabled) 0 else s.segments.count { !it.silent && it.edited == null && it.formatted == null && !it.raw.isNullOrBlank() }
+        val pol = if (!st.formatEnabled || !st.polishEnabled) 0 else s.segments.count { !it.silent && it.edited == null && !it.polished && !it.raw.isNullOrBlank() }
         return Pending(stt, fmt, pol)
     }
 
@@ -189,8 +189,8 @@ object Processor {
             status.value = "${c.model} で文字起こし中（${fmtClock(seg.startMs)}）"
             try {
                 val text = when (c.provider) {
-                    "groq" -> Groq.transcribe(settings.groqKey, c.model, file, Glossary.whisperPrompt(glossary))
-                    else -> Gemini.transcribe(settings.geminiKey, c.model, file, Prompts.stt(glossary))
+                    "groq" -> Groq.transcribe(settings.groqKey, c.model, file, Prompts.whisper(glossary, s))
+                    else -> Gemini.transcribe(settings.geminiKey, c.model, file, Prompts.stt(glossary, s))
                 }
                 Usage.add(c.key)
                 save(s, seg, cleanStt(text), c)
@@ -238,14 +238,14 @@ object Processor {
     /** 整形する区間のまとまり。まだそろっていなければ null */
     private fun pickBatch(s: Session): List<Segment>? {
         val segs = s.segments
-        val first = segs.indexOfFirst { !it.silent && it.formatted == null && !it.raw.isNullOrBlank() && !needsStt(it) }
+        val first = segs.indexOfFirst { !it.silent && it.edited == null && it.formatted == null && !it.raw.isNullOrBlank() && !needsStt(it) }
         if (first < 0) return null
         val batch = ArrayList<Segment>()
         for (i in first until segs.size) {
             val g = segs[i]
             if (g.silent || g.rawEngine == "error") continue
             if (needsStt(g) || g.raw == null) break
-            if (g.formatted != null) break
+            if (g.formatted != null || g.edited != null) break
             if (g.raw.isBlank()) continue
             batch.add(g)
             // 録音中はすぐ出すため少しずつ、録音が終わっていればまとめて
@@ -263,8 +263,8 @@ object Processor {
         val glossary = Glossary.load(app)
         val firstIdx = s.segments.indexOfFirst { it.index == batch.first().index }
         val context = s.segments.take(firstIdx.coerceAtLeast(0))
-            .mapNotNull { it.formatted ?: it.raw }.joinToString("").takeLast(400)
-        val system = Prompts.formatSystem(glossary)
+            .mapNotNull { displayText(it) }.joinToString("").takeLast(400)
+        val system = Prompts.formatSystem(glossary, s)
         val user = Prompts.formatUser(context, batch.map { it.raw ?: "" })
 
         for (c in usable(Role.FAST)) {
@@ -315,7 +315,7 @@ object Processor {
         batch.forEachIndexed { i, g ->
             Repo.updateSegment(s.id, g.index) {
                 // 送っている間に文字起こしがやり直されていたら使わない
-                if (it.raw != g.raw) it else it.copy(formatted = texts[i].trim(), formatModel = c.model, polished = polished)
+                if (it.raw != g.raw || it.edited != null) it else it.copy(formatted = texts[i].trimEnd().trimStart(' ', '\u3000'), formatModel = c.model, polished = polished)
             }
         }
     }
@@ -337,13 +337,13 @@ object Processor {
     private fun polishBatchOf(s: Session): List<Segment>? {
         val size = settings.polishBatch.coerceIn(2, 30)
         val segs = s.segments
-        val first = segs.indexOfFirst { !it.silent && !it.polished && it.formatted != null && !it.raw.isNullOrBlank() && !needsStt(it) }
+        val first = segs.indexOfFirst { !it.silent && it.edited == null && !it.polished && it.formatted != null && !it.raw.isNullOrBlank() && !needsStt(it) }
         if (first < 0) return null
         val batch = ArrayList<Segment>()
         for (i in first until segs.size) {
             val g = segs[i]
             if (g.silent || g.rawEngine == "error" || g.raw.isNullOrBlank()) continue
-            if (needsStt(g) || g.formatted == null || g.polished) break
+            if (needsStt(g) || g.formatted == null || g.polished || g.edited != null) break
             batch.add(g)
             if (batch.size >= size) return batch
         }
@@ -362,8 +362,8 @@ object Processor {
             val glossary = Glossary.load(app)
             val firstIdx = s.segments.indexOfFirst { it.index == batch.first().index }
             val context = s.segments.take(firstIdx.coerceAtLeast(0))
-                .mapNotNull { it.formatted ?: it.raw }.joinToString("").takeLast(800)
-            val system = Prompts.formatSystem(glossary)
+                .mapNotNull { displayText(it) }.joinToString("").takeLast(800)
+            val system = Prompts.formatSystem(glossary, s)
             val user = Prompts.formatUser(context, batch.map { it.raw ?: "" })
             val cands = Catalog.candidates(app, st, Role.POLISH).filter { Cooldown.ok(it.key) }
             if (cands.isEmpty()) {
@@ -414,7 +414,26 @@ object Processor {
 }
 
 object Prompts {
-    fun stt(glossary: String) = """
+    /** この記録で利用者が直した「誤→正」 */
+    private fun corrections(s: Session): String =
+        if (s.corrections.isEmpty()) "" else "\n利用者がこの講演で直した語（必ずこのとおりにする）：\n" + s.corrections.takeLast(60).joinToString("\n") + "\n"
+
+    /** 利用者が直した区間の例（書き方の参考） */
+    private fun examples(s: Session): String {
+        val ex = s.segments.filter { it.edited != null && !it.raw.isNullOrBlank() }.takeLast(3)
+        if (ex.isEmpty()) return ""
+        return "\n利用者が直した例（直し方・書き方・段落の付け方の参考）：\n" + ex.joinToString("\n") {
+            "・直す前：${(it.formatted ?: it.raw ?: "").take(250)}\n  直した後：${it.edited!!.take(250)}"
+        } + "\n"
+    }
+
+    fun whisper(glossary: String, s: Session): String {
+        val fixed = s.corrections.takeLast(20).map { it.substringAfter('→') }
+        val head = if (fixed.isEmpty()) "" else fixed.joinToString("、") + "、"
+        return (head + Glossary.whisperPrompt(glossary)).take(220)
+    }
+
+    fun stt(glossary: String, s: Session) = """
 これは日本語の講演（エホバの証人の集会・大会の講演）の録音の一部です。
 話された内容を、そのまま正確に書き起こしてください。
 ・句読点を付けてください。
@@ -424,11 +443,11 @@ object Prompts {
 ・用語・書名・聖句の言い回しは、新世界訳聖書（2019年改訂版）と jw.org の出版物の表記に合わせてください。
 ・次の用語集の表記に合わせてください（「誤→正」は直し方の例）：
 ${Glossary.forPrompt(glossary)}
-
+${corrections(s)}
 出力は書き起こした本文だけにしてください。
 """.trim()
 
-    fun formatSystem(glossary: String) = """
+    fun formatSystem(glossary: String, s: Session) = """
 あなたは日本語の講演の書き起こしを整える編集者です。講演はエホバの証人の集会・大会のものです。
 
 規則：
@@ -441,17 +460,20 @@ ${Glossary.forPrompt(glossary)}
 7. 聖句の参照は「ヨハネ 3:16」「テモテ第二 3:1-5」の形にそろえてください（書名は新世界訳の書名）。
 8. 聖句を朗読している部分は、新世界訳の本文の言い回しに合わせて直してかまいません。ただし確信がなければ、聞こえたとおりにしてください。
 9. 区間の境目で文が切れていても、そのままにしてください（前後の区間に文を動かさない）。
-10. 出力は JSON だけ：{"segments":["…","…"]}
+10. 段落：話題が変わるところ、聖句の朗読の前後、問いかけの前などで新しい段落にします。新しい段落を始める位置に空行（\n\n）を入れてください（区間の先頭でも途中でもよい）。段落は長くしすぎず、目安は200〜400字です。直前の内容の最後の段落がすでに長ければ、早めに区切ってください。
+11. 利用者が直した語・例があれば、それに従い、同じ書き方にそろえてください。
+12. 出力は JSON だけ：{"segments":["…","…"]}
 
 用語集（「誤→正」は直し方の例）：
 ${Glossary.forPrompt(glossary)}
+${corrections(s)}${examples(s)}
 """.trim()
 
     fun formatUser(context: String, raws: List<String>): String {
         val input = JSONObject().put("segments", JSONArray(raws)).toString()
         return buildString {
             if (context.isNotBlank()) {
-                append("直前の内容（参考。出力には含めない）：\n")
+                append("直前の内容（参考。出力には含めない。空行は段落の区切り）：\n")
                 append(context)
                 append("\n\n")
             }
