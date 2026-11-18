@@ -1,0 +1,212 @@
+package app.lecturenotes
+
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.util.Base64
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
+import java.util.concurrent.ConcurrentHashMap
+
+/** 制限にかかった（しばらく待てば使える） */
+class RateLimited(val waitMs: Long, message: String) : Exception(message)
+
+class HttpError(val code: Int, message: String) : Exception("HTTP $code: $message")
+
+object Http {
+    private const val UA = "lecture-notes-app"
+
+    fun post(url: String, headers: Map<String, String>, body: ByteArray, contentType: String, timeoutMs: Int = 120_000): String {
+        val c = URL(url).openConnection() as HttpURLConnection
+        try {
+            c.requestMethod = "POST"
+            c.doOutput = true
+            c.connectTimeout = 20_000
+            c.readTimeout = timeoutMs
+            c.setRequestProperty("Content-Type", contentType)
+            c.setRequestProperty("User-Agent", UA)
+            headers.forEach { (k, v) -> c.setRequestProperty(k, v) }
+            c.outputStream.use { it.write(body) }
+            return read(c)
+        } finally {
+            c.disconnect()
+        }
+    }
+
+    fun get(url: String, headers: Map<String, String> = emptyMap()): String {
+        val c = URL(url).openConnection() as HttpURLConnection
+        try {
+            c.connectTimeout = 20_000
+            c.readTimeout = 30_000
+            c.setRequestProperty("User-Agent", UA)
+            headers.forEach { (k, v) -> c.setRequestProperty(k, v) }
+            return read(c)
+        } finally {
+            c.disconnect()
+        }
+    }
+
+    private fun read(c: HttpURLConnection): String {
+        val code = c.responseCode
+        val stream = if (code in 200..299) c.inputStream else c.errorStream
+        val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
+        if (code == 429 || code == 503 || code == 502 || code == 500) {
+            throw RateLimited(waitFrom(c, text, code), "HTTP $code ${text.take(200)}")
+        }
+        if (code !in 200..299) throw HttpError(code, text.take(300))
+        return text
+    }
+
+    private fun waitFrom(c: HttpURLConnection, body: String, code: Int): Long {
+        if (code != 429) return 30_000
+        c.getHeaderField("retry-after")?.trim()?.toDoubleOrNull()?.let { return (it * 1000).toLong().coerceAtLeast(5_000) }
+        // Gemini: "retryDelay": "36s"
+        Regex("\"retryDelay\"\\s*:\\s*\"(\\d+)").find(body)?.let { return it.groupValues[1].toLong() * 1000 + 1000 }
+        if (body.contains("PerDay", ignoreCase = true) || body.contains("per day", ignoreCase = true)) return 60 * 60_000L
+        return 60_000
+    }
+}
+
+/** 制限にかかったサービス・モデルを、しばらく使わないようにする */
+object Cooldown {
+    private val until = ConcurrentHashMap<String, Long>()
+    val reasons = ConcurrentHashMap<String, String>()
+
+    fun ok(key: String) = (until[key] ?: 0L) <= System.currentTimeMillis()
+    fun set(key: String, ms: Long, reason: String) {
+        until[key] = System.currentTimeMillis() + ms
+        reasons[key] = reason
+    }
+
+    fun clear() {
+        until.clear()
+        reasons.clear()
+    }
+
+    fun remainingMs(key: String) = ((until[key] ?: 0L) - System.currentTimeMillis()).coerceAtLeast(0)
+}
+
+object Net {
+    fun online(context: Context): Boolean {
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return false
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+}
+
+object Groq {
+    private const val BASE = "https://api.groq.com/openai/v1"
+
+    fun sttKey(model: String) = "groq-stt:$model"
+    fun chatKey(model: String) = "groq-chat:$model"
+
+    fun transcribe(key: String, model: String, wav: File, prompt: String): String {
+        val boundary = "----lecturenotes${System.nanoTime()}"
+        val out = ByteArrayOutputStream()
+        fun field(name: String, value: String) {
+            out.write("--$boundary\r\nContent-Disposition: form-data; name=\"$name\"\r\n\r\n$value\r\n".toByteArray())
+        }
+        field("model", model)
+        field("language", "ja")
+        field("response_format", "json")
+        field("temperature", "0")
+        if (prompt.isNotBlank()) field("prompt", prompt)
+        out.write("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"${wav.name}\"\r\nContent-Type: audio/wav\r\n\r\n".toByteArray())
+        out.write(wav.readBytes())
+        out.write("\r\n--$boundary--\r\n".toByteArray())
+        val resp = Http.post(
+            "$BASE/audio/transcriptions",
+            mapOf("Authorization" to "Bearer $key"),
+            out.toByteArray(),
+            "multipart/form-data; boundary=$boundary",
+        )
+        return JSONObject(resp).optString("text").trim()
+    }
+
+    fun chat(key: String, model: String, system: String, user: String): String {
+        val body = JSONObject().apply {
+            put("model", model)
+            put("temperature", 0.2)
+            put("response_format", JSONObject().put("type", "json_object"))
+            put("messages", JSONArray().apply {
+                put(JSONObject().put("role", "system").put("content", system))
+                put(JSONObject().put("role", "user").put("content", user))
+            })
+        }
+        val resp = Http.post(
+            "$BASE/chat/completions",
+            mapOf("Authorization" to "Bearer $key"),
+            body.toString().toByteArray(),
+            "application/json",
+        )
+        return JSONObject(resp).getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("content")
+    }
+
+    fun listModels(key: String): List<String> {
+        val resp = Http.get("$BASE/models", mapOf("Authorization" to "Bearer $key"))
+        val arr = JSONObject(resp).optJSONArray("data") ?: JSONArray()
+        return (0 until arr.length()).map { arr.getJSONObject(it).optString("id") }.sorted()
+    }
+}
+
+object Gemini {
+    private const val BASE = "https://generativelanguage.googleapis.com/v1beta"
+
+    fun cooldownKey(model: String) = "gemini:$model"
+
+    fun generate(key: String, model: String, system: String?, parts: JSONArray, json: Boolean): String {
+        val body = JSONObject().apply {
+            if (system != null) put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
+            put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", parts)))
+            put("generationConfig", JSONObject().apply {
+                put("temperature", 0.2)
+                if (json) put("responseMimeType", "application/json")
+            })
+        }
+        val resp = Http.post(
+            "$BASE/models/${URLEncoder.encode(model, "UTF-8")}:generateContent",
+            mapOf("x-goog-api-key" to key),
+            body.toString().toByteArray(),
+            "application/json",
+            timeoutMs = 180_000,
+        )
+        val j = JSONObject(resp)
+        val cands = j.optJSONArray("candidates") ?: throw HttpError(200, "応答が空です: ${resp.take(200)}")
+        if (cands.length() == 0) return ""
+        val ps = cands.getJSONObject(0).optJSONObject("content")?.optJSONArray("parts") ?: return ""
+        return (0 until ps.length()).joinToString("") {
+            val p = ps.getJSONObject(it)
+            if (p.optBoolean("thought")) "" else p.optString("text")
+        }
+    }
+
+    fun transcribe(key: String, model: String, wav: File, prompt: String): String {
+        val parts = JSONArray()
+            .put(JSONObject().put("text", prompt))
+            .put(JSONObject().put("inline_data", JSONObject()
+                .put("mime_type", "audio/wav")
+                .put("data", Base64.encodeToString(wav.readBytes(), Base64.NO_WRAP))))
+        return generate(key, model, null, parts, json = false).trim()
+    }
+
+    fun text(key: String, model: String, system: String, user: String): String =
+        generate(key, model, system, JSONArray().put(JSONObject().put("text", user)), json = true)
+
+    fun listModels(key: String): List<String> {
+        val resp = Http.get("$BASE/models?pageSize=200", mapOf("x-goog-api-key" to key))
+        val arr = JSONObject(resp).optJSONArray("models") ?: JSONArray()
+        return (0 until arr.length()).map { arr.getJSONObject(it) }
+            .filter { m ->
+                val methods = m.optJSONArray("supportedGenerationMethods")
+                methods != null && (0 until methods.length()).any { methods.getString(it) == "generateContent" }
+            }
+            .map { it.optString("name").removePrefix("models/") }
+            .filter { it.startsWith("gemini") }
+    }
+}
