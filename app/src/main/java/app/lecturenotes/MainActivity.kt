@@ -1164,6 +1164,8 @@ private fun InlineEditor(
             textStyle = MaterialTheme.typography.bodyLarge.copy(color = cs.onSurface),
             cursorBrush = SolidColor(cs.primary),
             onTextLayout = { textLayout = it },
+            // マーカーを、直している欄の中でも同じ黄色で見せる（文字は変えない）
+            visualTransformation = remember(g.highlights) { MarkerTransformation(g.highlights) },
             modifier = Modifier.fillMaxWidth().focusRequester(focus)
                 .onGloballyPositioned { fieldTop = it.positionInWindow().y },
         )
@@ -1226,6 +1228,23 @@ private fun SmallBtn(label: String, enabled: Boolean = true, primary: Boolean = 
         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
         modifier = Modifier.heightIn(min = 36.dp),
     ) { Text(label, fontWeight = if (primary) FontWeight.Bold else FontWeight.Normal) }
+}
+
+/** 入力欄の中のマーカー表示。文字の位置は変えず、色だけ付ける */
+private class MarkerTransformation(private val highlights: List<String>) : androidx.compose.ui.text.input.VisualTransformation {
+    override fun filter(text: androidx.compose.ui.text.AnnotatedString): androidx.compose.ui.text.input.TransformedText {
+        val t = text.text
+        val out = buildAnnotatedString {
+            append(text)
+            val bg = SpanStyle(background = MARKER_COLOR)
+            if (Marker.WHOLE in highlights) addStyle(bg, 0, t.length)
+            for (h in highlights) {
+                if (h == Marker.WHOLE) continue
+                for (r in Marker.find(t, h)) addStyle(bg, r.first, r.last + 1)
+            }
+        }
+        return androidx.compose.ui.text.input.TransformedText(out, androidx.compose.ui.text.input.OffsetMapping.Identity)
+    }
 }
 
 /** 確定（✓）。いつも右端に置く（右手の親指が届くところ） */
