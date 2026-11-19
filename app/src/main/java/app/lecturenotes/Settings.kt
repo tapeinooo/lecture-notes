@@ -104,6 +104,9 @@ class Settings(context: Context) {
             Power.dim.value = v
         }
 
+    /** 無音がこの分数続いたら自動で録音を止める（0 = 止めない） */
+    var autoStopMinutes by int("autoStopMinutes", 20)
+
     /** マーカーのいまの色（g 緑・y 黄・r 赤） */
     var markerColor by str("markerColor", "g")
 

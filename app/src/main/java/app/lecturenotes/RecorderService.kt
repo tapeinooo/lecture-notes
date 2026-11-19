@@ -57,8 +57,14 @@ class RecorderService : Service() {
             ACTION_START -> {
                 // startForegroundService のあとは必ず前面に出す（すでに録音中でも。出さないと Android がアプリを止める）
                 startInForeground()
-                val id = intent.getStringExtra(EXTRA_ID)
-                if (id == null || running) return START_NOT_STICKY
+                val id = intent.getStringExtra(EXTRA_ID) ?: return START_NOT_STICKY
+                val current = Live.state.value.sessionId
+                if (running && current == id) return START_NOT_STICKY
+                // ほかの記録を録音中なら、止めてから新しく始める（止め忘れ対策）
+                if (running) {
+                    stopRecording()
+                    Processor.status.value = "前の録音を止めて、新しい録音を始めました"
+                }
                 begin(id)
             }
             ACTION_STOP -> finish()
@@ -123,7 +129,8 @@ class RecorderService : Service() {
         Processor.wake()
     }
 
-    private fun finish() {
+    /** 録音を止める（サービスは残す。続けて別の記録を録音できる） */
+    private fun stopRecording() {
         running = false
         thread?.join(5000)
         thread = null
@@ -131,9 +138,14 @@ class RecorderService : Service() {
         // 録音が途中で終わったとき（マイクが使えないなど）も、録音中のままにしない
         Live.state.value.sessionId?.let { sid -> Repo.update(sid) { it.copy(recording = false) } }
         Live.state.value = Live.State()
+        Live.lastVoiceAt = 0L
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
         Processor.wake()
+    }
+
+    private fun finish() {
+        stopRecording()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -304,8 +316,19 @@ class RecorderService : Service() {
                 if (settings.voiceChangeHints) voice.feed(buf, n, rms, startMs + (samples - n) * 1000L / SAMPLE_RATE)
                 if (rms > 120) loudFrames++
                 Live.level.value = (rms / 4000.0).coerceIn(0.0, 1.0).toFloat()
-                // 1秒ごとに、通話などでマイクが取られていないかを見る
-                if (++tick % 10 == 0) checkMicTaken(rec, audioManager)
+                // 1秒ごとに、通話などでマイクが取られていないか・無音が続いていないかを見る
+                if (++tick % 10 == 0) {
+                    checkMicTaken(rec, audioManager)
+                    val limitMin = settings.autoStopMinutes
+                    if (limitMin > 0) {
+                        val since = maxOf(Live.lastVoiceAt, Live.state.value.startedAt)
+                        if (since > 0 && System.currentTimeMillis() - since > limitMin * 60_000L) {
+                            Processor.status.value = "無音が${limitMin}分続いたので、録音を止めました"
+                            running = false
+                            android.os.Handler(mainLooper).post { finish() }
+                        }
+                    }
+                }
                 val quiet = rms < maxOf(150.0, rmsSum / frames * 0.35)
                 if (quiet) quietRun++ else {
                     quietRun = 0

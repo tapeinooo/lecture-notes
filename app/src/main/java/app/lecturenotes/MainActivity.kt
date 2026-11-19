@@ -284,7 +284,7 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
                     RecorderService.start(context, s.id)
                     onOpen(s.id, true, "")
                 },
-                enabled = live.sessionId == null,
+                // 録音中なら、前の録音を止めてから新しく始める
                 modifier = Modifier.fillMaxWidth().height(56.dp),
             ) { Text("● 新しく録音する", style = MaterialTheme.typography.titleMedium) }
             // 探す（タイトル・話し手・ラベル・文章）
@@ -873,10 +873,10 @@ private fun RecordControls(s: Session, isRec: Boolean, otherRec: Boolean, live: 
         } else {
             Button(
                 onClick = { RecorderService.start(context, s.id) },
-                enabled = !otherRec,
+                // ほかの記録を録音中なら、それを止めてから始める
                 modifier = Modifier.fillMaxWidth(),
             ) { Text(if (s.segments.isEmpty()) "● 録音を始める" else "● 続きを録音する") }
-            if (otherRec) Text("ほかの記録を録音中です", style = MaterialTheme.typography.labelSmall)
+            if (otherRec) Text("いま録音中の記録は止めて、こちらで録音を始めます", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
         }
     }
 }
@@ -1805,6 +1805,17 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
 
             Section("ラベルと話し手")
             LabelSpeakerSettings()
+
+            Section("録音")
+            var autoStop by remember { mutableStateOf(st.autoStopMinutes.toString()) }
+            Field("無音が何分続いたら自動で止めるか（0 = 止めない）", autoStop, KeyboardType.Number) {
+                autoStop = it; it.toIntOrNull()?.let { v -> st.autoStopMinutes = v.coerceIn(0, 240) }
+            }
+            Text(
+                "ほかの記録で録音を始めたときも、前の録音は自動で止めます。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
 
             Section("電池")
             var saveOn by remember { mutableStateOf(st.powerSave) }
