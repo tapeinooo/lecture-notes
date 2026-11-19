@@ -51,7 +51,8 @@ object Plan {
     private fun looksLikeSkip(t: String): Boolean {
         val x = t.replace(Regex("\\s"), "")
         return x.startsWith("歌") || x.startsWith("音楽") || x.contains("休憩") || x.contains("昼休み") ||
-            x == "祈り" || x.startsWith("祈り") || x.contains("発表")
+            x == "祈り" || x.startsWith("祈り") || x.contains("発表") || x.contains("お知らせ") ||
+            Regex("^\\d+番の歌").containsMatchIn(x)
     }
 
     fun parse(text: String): List<Item> {
@@ -60,6 +61,7 @@ object Plan {
         var day = -1
         var lastMin = -1
         var pendingTime: Int? = null
+        var lastTimed: Item? = null
         fun toMin(ampm: String?, h: Int, m: Int): Int {
             var hh = h
             if (ampm == "午後" && hh < 12) hh += 12
@@ -86,17 +88,23 @@ object Plan {
                 val min = toMin(m.groupValues[1].ifEmpty { null }, m.groupValues[2].toInt(), m.groupValues[3].toInt())
                 lastMin = min
                 val t = m.groupValues[4].trim()
-                out.add(Item(day.coerceAtLeast(0), min, t, looksLikeSkip(t)))
+                val item = Item(day.coerceAtLeast(0), min, t, looksLikeSkip(t))
+                out.add(item)
+                lastTimed = item
                 pendingTime = null
             } else if (pendingTime != null) {
                 // 時刻だけの行の次の行がタイトル
-                out.add(Item(day.coerceAtLeast(0), pendingTime, line, looksLikeSkip(line)))
+                val item = Item(day.coerceAtLeast(0), pendingTime, line, looksLikeSkip(line))
+                out.add(item)
+                lastTimed = item
                 pendingTime = null
             } else if (out.isNotEmpty() && line.first() in "•・●◦‐-–—" && line.length in 3..60) {
                 // シンポジウムの各部分（「• 祈りによって」）も、それぞれ枠にする（親と同じ時刻の少しあと）
-                val parent = out.last()
+                // 親（シンポジウム）は、最後の時刻付きの項目
+                val parent = lastTimed ?: out.last()
+                val theme = parent.title.substringAfter(':').substringAfter('：').trim()
                 val t = line.trimStart('•', '・', '●', '◦', '‐', '-', '–', '—', ' ', '　')
-                out.add(Item(parent.day, parent.minutes?.plus(1), t, false))
+                out.add(Item(parent.day, out.last().minutes?.plus(1), "$t（$theme）", false))
             }
         }
         // 時刻が1つもなければ、1行1つの枠にする
