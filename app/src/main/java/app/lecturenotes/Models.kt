@@ -278,19 +278,77 @@ object Latency {
 }
 
 /** 今日モデルごとに何回使ったか（画面に出す。アプリを閉じると消える） */
+/**
+ * 今日モデルごとに使った量（回数・送った音声の秒数）。日をまたぐと 0 に戻る。アプリを閉じても残す。
+ * 無料枠の残りの目安を出すのに使う。
+ */
 object Usage {
-    private var day = LocalDate.now(ZoneId.systemDefault())
+    private const val PREF = "usage"
+    private var app: Context? = null
+    private var day = ""
     private val counts = ConcurrentHashMap<String, Int>()
+    private val audioSec = ConcurrentHashMap<String, Double>()
+
+    /** サービスが教えてくれた「今日あと何回」（Groq） */
+    val remainingRequests = ConcurrentHashMap<String, Int>()
+
+    private fun today() = LocalDate.now(ZoneId.systemDefault()).toString()
 
     @Synchronized
-    fun add(key: String) {
-        val today = LocalDate.now(ZoneId.systemDefault())
-        if (today != day) {
-            counts.clear()
-            day = today
+    fun init(ctx: Context) {
+        app = ctx.applicationContext
+        val p = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+        day = p.getString("day", "") ?: ""
+        if (day == today()) {
+            runCatching {
+                val j = org.json.JSONObject(p.getString("data", "{}") ?: "{}")
+                j.optJSONObject("counts")?.let { o -> o.keys().forEach { k -> counts[k] = o.getInt(k) } }
+                j.optJSONObject("audio")?.let { o -> o.keys().forEach { k -> audioSec[k] = o.getDouble(k) } }
+            }
         }
-        counts[key] = (counts[key] ?: 0) + 1
     }
 
-    fun get(key: String) = counts[key] ?: 0
+    @Synchronized
+    private fun rollDay() {
+        val t = today()
+        if (t != day) {
+            counts.clear()
+            audioSec.clear()
+            remainingRequests.clear()
+            day = t
+        }
+    }
+
+    @Synchronized
+    fun add(key: String, audioSeconds: Double = 0.0) {
+        rollDay()
+        counts[key] = (counts[key] ?: 0) + 1
+        if (audioSeconds > 0) audioSec[key] = (audioSec[key] ?: 0.0) + audioSeconds
+        save()
+    }
+
+    private fun save() {
+        val c = app ?: return
+        val j = org.json.JSONObject()
+            .put("counts", org.json.JSONObject(counts as Map<*, *>))
+            .put("audio", org.json.JSONObject(audioSec as Map<*, *>))
+        c.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putString("day", day).putString("data", j.toString()).apply()
+    }
+
+    fun get(key: String): Int {
+        rollDay()
+        return counts[key] ?: 0
+    }
+
+    fun audioSeconds(key: String): Double {
+        rollDay()
+        return audioSec[key] ?: 0.0
+    }
+
+    /** Groq の Whisper の、1日に文字起こしできる音声の長さの目安（秒）。無料枠の目安 */
+    const val GROQ_WHISPER_DAILY_SEC = 28_800.0
+
+    /** 今日あと何時間ぶん、Groq で文字起こしできそうか（モデルごとの合計） */
+    fun groqHoursLeft(models: List<String>): Double =
+        models.sumOf { m -> (GROQ_WHISPER_DAILY_SEC - audioSeconds("groq:$m")).coerceAtLeast(0.0) } / 3600.0
 }

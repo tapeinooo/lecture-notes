@@ -211,6 +211,8 @@ object Live {
         /** いま使っている方法 */
         val engine: String = "",
         val error: String? = null,
+        /** 通話中などでマイクが使えず、無音になっているとき */
+        val warning: String? = null,
     ) {
         fun elapsedMs(now: Long = System.currentTimeMillis()) = if (sessionId == null) 0 else baseMs + (now - startedAt)
     }

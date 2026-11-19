@@ -33,6 +33,14 @@ object Processor {
     /** 仕上げの状態（画面に出す） */
     val polishStatus = MutableStateFlow("")
 
+    /** 役割ごとに、最後に使ったモデル（画面に小さく出す） */
+    val lastUsed = MutableStateFlow<Map<Role, String>>(emptyMap())
+
+    private fun used(role: Role, c: Cand) {
+        lastUsed.value = lastUsed.value + (role to c.model)
+        Http.lastRemaining.get()?.let { Usage.remainingRequests[c.key] = it }
+    }
+
     /** いまの作業を短く（画面の下の動くアイコンの横に出す）。何もしていなければ null */
     val activity = MutableStateFlow<String?>(null)
     val polishActivity = MutableStateFlow<String?>(null)
@@ -217,15 +225,16 @@ object Processor {
         val glossary = Glossary.load(app)
         for (c in usable(Role.STT)) {
             status.value = "${c.model} で文字起こし中（${fmtClock(seg.startMs)}）"
-            activity.value = "清書中"
+            activity.value = "清書中（${c.model}）"
             try {
                 val text = timed(c, Role.STT) { to ->
                     when (c.provider) {
-                        "groq" -> Groq.transcribe(settings.groqKey, c.model, file, Prompts.whisper(glossary, s), to)
-                        else -> Gemini.transcribe(settings.geminiKey, c.model, file, Prompts.stt(glossary, s), to)
+                        "groq" -> Groq.transcribe(settings.groqKey, c.model, file, Prompts.whisper(glossary, s, seg), to)
+                        else -> Gemini.transcribe(settings.geminiKey, c.model, file, Prompts.stt(glossary, s, seg), to)
                     }
                 }
-                Usage.add(c.key)
+                Usage.add(c.key, (seg.endMs - seg.startMs) / 1000.0)
+                used(Role.STT, c)
                 save(s, seg, cleanStt(text), c)
                 return Outcome.DONE
             } catch (e: RateLimited) {
@@ -326,7 +335,7 @@ object Processor {
 
         for (c in usable(Role.FAST)) {
             status.value = "${c.model} で整形中（${fmtClock(batch.first().startMs)}〜）"
-            activity.value = "整形中"
+            activity.value = "整形中（${c.model}）"
             try {
                 val out = timed(c, Role.FAST) { to ->
                     when (c.provider) {
@@ -335,6 +344,7 @@ object Processor {
                     }
                 }
                 Usage.add(c.key)
+                used(Role.FAST, c)
                 applyFormatted(s, batch, out, c, polished = false)
                 return Outcome.DONE
             } catch (e: RateLimited) {
@@ -435,7 +445,7 @@ object Processor {
             }
             for (c in cands) {
                 polishStatus.value = "${c.model} で仕上げ中（${fmtClock(batch.first().startMs)}〜）"
-                polishActivity.value = "仕上げ中"
+                polishActivity.value = "仕上げ中（${c.model}）"
                 try {
                     val out = timed(c, Role.POLISH) { to ->
                         when (c.provider) {
@@ -444,6 +454,7 @@ object Processor {
                         }
                     }
                     Usage.add(c.key)
+                    used(Role.POLISH, c)
                     applyFormatted(s, batch, out, c, polished = true)
                     polishStatus.value = ""
                     return true
@@ -496,13 +507,35 @@ object Prompts {
         } + "\n"
     }
 
-    fun whisper(glossary: String, s: Session): String {
-        val fixed = s.corrections.takeLast(20).map { it.substringAfter('→') }
-        val head = if (fixed.isEmpty()) "" else fixed.joinToString("、") + "、"
-        return (head + Glossary.whisperPrompt(glossary)).take(220)
+    /** この区間の直前に話された文（区切りの境目で言葉が切れても、つながりが分かるように） */
+    fun previousText(s: Session, seg: Segment, max: Int): String {
+        val i = s.segments.indexOfFirst { it.index == seg.index }
+        if (i <= 0) return ""
+        val sb = StringBuilder()
+        for (k in i - 1 downTo 0) {
+            val g = s.segments[k]
+            if (g.silent) continue
+            val t = (displayText(g) ?: "").replace(Regex("\\s+"), "")
+            if (t.isEmpty()) continue
+            sb.insert(0, t)
+            if (sb.length >= max) break
+        }
+        return sb.toString().takeLast(max)
     }
 
-    fun stt(glossary: String, s: Session) = """
+    /**
+     * Whisper の prompt。Whisper は prompt を「直前に話された文」として読むので、
+     * 用語（語彙のヒント）のあとに、直前の文を最後に置く（区切りの境目の聞き違いが減る）。
+     */
+    fun whisper(glossary: String, s: Session, seg: Segment): String {
+        val fixed = s.corrections.takeLast(20).map { it.substringAfter('→') }
+        val head = if (fixed.isEmpty()) "" else fixed.joinToString("、") + "、"
+        val prev = previousText(s, seg, 90)
+        val terms = (head + Glossary.whisperPrompt(glossary)).take(if (prev.isEmpty()) 220 else 130)
+        return if (prev.isEmpty()) terms else "$terms\n$prev"
+    }
+
+    fun stt(glossary: String, s: Session, seg: Segment) = """
 これは日本語の講演（エホバの証人の集会・大会の講演）の録音の一部です。
 話された内容を、そのまま正確に書き起こしてください。
 ・句読点を付けてください。
@@ -513,6 +546,7 @@ object Prompts {
 ・次の用語集の表記に合わせてください（「誤→正」は直し方の例）：
 ${Glossary.forPrompt(glossary)}
 ${corrections(s)}
+${previousText(s, seg, 200).let { if (it.isEmpty()) "" else "直前に話された内容（参考。出力には含めない。言葉が区切りの境目で切れていたら、つながりを考えて書き起こす）：\n$it\n" }}
 出力は書き起こした本文だけにしてください。
 """.trim()
 

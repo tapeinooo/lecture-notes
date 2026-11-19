@@ -69,6 +69,9 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings as SettingsIcon
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -218,7 +221,10 @@ fun HomeScreen(onOpen: (String, Boolean) -> Unit, onSettings: () -> Unit) {
     val labels by Meta.labels.collectAsState()
     var filter by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf<String?>(null) }
-    val shown = sessions.filter { filter == null || filter in it.labels }
+    var homeQuery by remember { mutableStateOf("") }
+    val shown = sessions.filter { s ->
+        (filter == null || filter in s.labels) && (homeQuery.isBlank() || matchesSession(s, homeQuery))
+    }
 
     Column(Modifier.fillMaxSize()) {
         Header("たっぴぃず録音", null) {
@@ -238,6 +244,14 @@ fun HomeScreen(onOpen: (String, Boolean) -> Unit, onSettings: () -> Unit) {
                 enabled = live.sessionId == null,
                 modifier = Modifier.fillMaxWidth().height(56.dp),
             ) { Text("● 新しく録音する", style = MaterialTheme.typography.titleMedium) }
+            // 探す（タイトル・話し手・ラベル・文章）
+            OutlinedTextField(
+                value = homeQuery, onValueChange = { homeQuery = it },
+                placeholder = { Text("探す（タイトル・話し手・文章）") }, singleLine = true,
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                trailingIcon = { if (homeQuery.isNotEmpty()) IconBtn(Icons.Default.Close, "消す") { homeQuery = "" } },
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            )
             // ラベルで絞り込む
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(vertical = 4.dp)) {
                 FilterChip(selected = filter == null, onClick = { filter = null }, label = { Text("すべて") })
@@ -310,6 +324,13 @@ fun HomeScreen(onOpen: (String, Boolean) -> Unit, onSettings: () -> Unit) {
             }
         }
     }
+}
+
+private fun matchesSession(s: Session, q: String): Boolean {
+    val t = q.trim()
+    if (t.isEmpty()) return true
+    if (s.title.contains(t, true) || s.speaker.contains(t, true) || s.labels.any { it.contains(t, true) }) return true
+    return s.segments.any { (displayText(it) ?: "").contains(t, true) }
 }
 
 /** 記録の情報（タイトル・話し手・ラベル・録音日時・録音時間）をその場で直す欄 */
@@ -452,6 +473,11 @@ fun DetailScreen(id: String, openInfo: Boolean, onBack: () -> Unit, onSettings: 
     }
 
     var menu by remember { mutableStateOf(false) }
+    // 記録の中の検索
+    var searching by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    var hitPos by remember { mutableStateOf(0) }
+
     /** 直している区間と、入力中の文（画面の段落が並び替わっても消えないよう、ここで持つ） */
     var editState by remember { mutableStateOf<EditState?>(null) }
     val editing = editState?.let { it.segIndex to 0 }
@@ -493,6 +519,7 @@ fun DetailScreen(id: String, openInfo: Boolean, onBack: () -> Unit, onSettings: 
 
     Column(Modifier.fillMaxSize()) {
         Header(s.title, onBack) {
+            IconBtn(Icons.Default.Search, "この記録の中を探す") { searching = !searching; if (!searching) query = "" }
             IconBtn(Icons.Default.SettingsIcon, "設定") { onSettings() }
             Box {
                 IconBtn(Icons.Default.MoreVert, "その他") { menu = true }
@@ -535,6 +562,35 @@ fun DetailScreen(id: String, openInfo: Boolean, onBack: () -> Unit, onSettings: 
             }
         }
 
+        // 見つかった段落（何番目の段落か）
+        val hits = remember(rows, query) {
+            if (query.isBlank()) emptyList() else rows.indices.filter { rows[it].text.contains(query, ignoreCase = true) }
+        }
+        if (searching) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+                OutlinedTextField(
+                    value = query, onValueChange = { query = it; hitPos = 0 },
+                    placeholder = { Text("探す言葉") }, singleLine = true,
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    if (query.isBlank()) "" else if (hits.isEmpty()) "0" else "${hitPos + 1}/${hits.size}",
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(horizontal = 4.dp),
+                )
+                IconBtn(Icons.Default.KeyboardArrowUp, "前へ", enabled = hits.isNotEmpty()) {
+                    hitPos = (hitPos - 1 + hits.size) % hits.size
+                }
+                IconBtn(Icons.Default.KeyboardArrowDown, "次へ", enabled = hits.isNotEmpty()) {
+                    hitPos = (hitPos + 1) % hits.size
+                }
+                IconBtn(Icons.Default.Close, "探すのをやめる") { searching = false; query = "" }
+            }
+        }
+        LaunchedEffect(hits, hitPos) {
+            if (hits.isNotEmpty()) listState.animateScrollToItem(hits[hitPos.coerceIn(0, hits.size - 1)])
+        }
         if (showInfo) {
             InfoPanel(s, if (isRec) live.elapsedMs(now) else null) { showInfo = false }
         } else {
@@ -575,7 +631,7 @@ fun DetailScreen(id: String, openInfo: Boolean, onBack: () -> Unit, onSettings: 
             items(rows.size, key = { rowKeys[it] }) { i ->
                 val para = rows[i]
                 ParaView(
-                    para, editing?.first,
+                    para, editing?.first, if (searching) query else "",
                     onEdit = { g, cursor -> editCursorY = null; editState = EditState(g.index, displayText(g) ?: "", cursor) },
                     onMark = { Marker.toggleWhole(id, it.index) },
                 ) { g ->
@@ -632,6 +688,8 @@ fun DetailScreen(id: String, openInfo: Boolean, onBack: () -> Unit, onSettings: 
                 )
                 Text(if (detail) "▾" else "▸", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
             }
+            // どの AI を使っているか（小さく）
+            AiLine()
             if (detail) {
                 Text(
                     status + (if (polishStatus.isNotEmpty()) "\n$polishStatus" else ""),
@@ -710,6 +768,16 @@ private fun RecordControls(s: Session, isRec: Boolean, otherRec: Boolean, live: 
             }
             Text(live.engine, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
             live.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+            live.warning?.let {
+                Text(
+                    it,
+                    color = MaterialTheme.colorScheme.onError,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.fillMaxWidth().padding(top = 2.dp)
+                        .background(MaterialTheme.colorScheme.error, RoundedCornerShape(6.dp)).padding(6.dp),
+                )
+            }
         } else {
             Button(
                 onClick = { RecorderService.start(context, s.id) },
@@ -719,6 +787,29 @@ private fun RecordControls(s: Session, isRec: Boolean, otherRec: Boolean, live: 
             if (otherRec) Text("ほかの記録を録音中です", style = MaterialTheme.typography.labelSmall)
         }
     }
+}
+
+/** 役割ごとに、いま使っている（最後に使った）AI を小さく出す。まだ使っていなければ、次に使う予定のもの */
+@Composable
+private fun AiLine() {
+    val context = LocalContext.current
+    val used by Processor.lastUsed.collectAsState()
+    val st = remember { Settings(context) }
+    fun name(role: Role): String? = used[role] ?: Catalog.candidates(context, st, role).firstOrNull()?.model
+    val parts = listOfNotNull(
+        name(Role.STT)?.let { "清書 $it" },
+        if (st.formatEnabled) name(Role.FAST)?.let { "整形 $it" } else null,
+        if (st.formatEnabled && st.polishEnabled) name(Role.POLISH)?.let { "仕上げ $it" } else null,
+    )
+    if (parts.isEmpty()) return
+    Text(
+        "🤖 " + parts.joinToString("・"),
+        style = MaterialTheme.typography.labelSmall,
+        fontSize = 10.sp,
+        color = MaterialTheme.colorScheme.outline,
+        maxLines = 1,
+        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+    )
 }
 
 /** 作業中に動く、ペンで書いているような小さなアイコン */
@@ -812,6 +903,8 @@ private fun Scrollbar(state: androidx.compose.foundation.lazy.LazyListState, mod
     }
 }
 
+private val SEARCH_COLOR = androidx.compose.ui.graphics.Color(0x6648A0FF)
+
 /** マーカーの色（g 緑・y 黄・r 赤）。文字が読めるよう半透明 */
 private fun markerColor(c: Char) = when (c) {
     'y' -> androidx.compose.ui.graphics.Color(0x80FFE14D)
@@ -831,6 +924,7 @@ private fun markerDot(c: Char) = when (c) {
 private fun ParaView(
     para: Transcript.Para,
     editingIndex: Int?,
+    query: String,
     onEdit: (Segment, Int) -> Unit,
     onMark: (Segment) -> Unit,
     editor: @Composable (Segment) -> Unit,
@@ -853,7 +947,7 @@ private fun ParaView(
             if (gr is Segment) Box(Modifier.padding(end = GUTTER)) { editor(gr) }
             else {
                 @Suppress("UNCHECKED_CAST")
-                PiecesText(gr as List<Transcript.Piece>, onEdit, onMark)
+                PiecesText(gr as List<Transcript.Piece>, query, onEdit, onMark)
             }
         }
     }
@@ -884,13 +978,13 @@ private fun wordRange(text: String, off: Int): IntRange {
  *  - 縦に動かす：ふつうにスクロール
  */
 @Composable
-private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment, Int) -> Unit, @Suppress("UNUSED_PARAMETER") onMark: (Segment) -> Unit) {
+private fun PiecesText(pieces: List<Transcript.Piece>, query: String, onEdit: (Segment, Int) -> Unit, @Suppress("UNUSED_PARAMETER") onMark: (Segment) -> Unit) {
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val uri = LocalUriHandler.current
     val cs = MaterialTheme.colorScheme
     val density = LocalDensity.current
-    val built = remember(pieces, cs) {
+    val built = remember(pieces, cs, query) {
         val segRanges = ArrayList<SegRange>()
         val urlRanges = ArrayList<Triple<Int, Int, Scripture.Ref>>()
         val hlRanges = ArrayList<HlRange>()
@@ -941,7 +1035,18 @@ private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment, Int) ->
                 p.seg?.let { segRanges.add(SegRange(start, length, it, p.text)) }
             }
         }
-        Built(text, segRanges, urlRanges, hlRanges, stamps)
+        // 検索で見つかったところ（青っぽく）
+        val shown = if (query.isBlank()) text else buildAnnotatedString {
+            append(text)
+            var from = 0
+            while (true) {
+                val k = text.text.indexOf(query, from, ignoreCase = true)
+                if (k < 0) break
+                addStyle(SpanStyle(background = SEARCH_COLOR, fontWeight = FontWeight.Bold), k, k + query.length)
+                from = k + query.length
+            }
+        }
+        Built(shown, segRanges, urlRanges, hlRanges, stamps)
     }
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
 
@@ -1611,6 +1716,41 @@ private fun LabelSpeakerSettings() {
     }
 }
 
+/** 無料枠の残りの目安 */
+@Composable
+private fun QuotaSummary(st: Settings, @Suppress("UNUSED_PARAMETER") now: Long) {
+    val context = LocalContext.current
+    val stt = Catalog.candidates(context, st, Role.STT)
+    val groqModels = stt.filter { it.provider == "groq" }.map { it.model }
+    val gem = stt.filter { it.provider == "gemini" }
+    val tired = gem.count { Cooldown.remainingMs(it.key) > 60 * 60_000L }
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = 6.dp)
+            .background(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+            .padding(8.dp),
+    ) {
+        Text("今日の無料枠の目安", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+        if (groqModels.isNotEmpty()) {
+            val left = Usage.groqHoursLeft(groqModels)
+            Text(
+                "文字起こし：Groq であと約 %.1f 時間ぶん（%d つのモデル、各 1 日 8 時間まで）".format(left, groqModels.size),
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        if (gem.isNotEmpty()) {
+            Text(
+                "そのあと Gemini（${gem.size} つ）に回します" + if (tired > 0) "。うち $tired つは今日の上限に達しています" else "",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        Text(
+            "Groq は 1 日の音声の長さ、Gemini は 1 日の回数に上限があります（Gemini の残りはサービスが教えてくれないので、上限に達したら「休み」と出ます）。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline,
+        )
+    }
+}
+
 @Composable
 private fun ModelOrder(st: Settings) {
     val context = LocalContext.current
@@ -1621,6 +1761,7 @@ private fun ModelOrder(st: Settings) {
             now = System.currentTimeMillis()
         }
     }
+    QuotaSummary(st, now)
     Role.entries.forEach { role ->
         Spacer(Modifier.height(8.dp))
         Text("${role.label}の順番", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
@@ -1636,6 +1777,8 @@ private fun ModelOrder(st: Settings) {
             } else "使える"
             Text(
                 "${i + 1}. ${c.model}（${if (c.provider == "groq") "Groq" else "Gemini"}）　$state・今日 ${Usage.get(c.key)} 回" +
+                    (if (role == Role.STT && Usage.audioSeconds(c.key) > 0) "・%.1f 時間ぶん".format(Usage.audioSeconds(c.key) / 3600) else "") +
+                    (Usage.remainingRequests[c.key]?.let { "・あと $it 回" } ?: "") +
                     (Latency.avgMs(context, role, c)?.let { "・平均 %.1f 秒".format(it / 1000.0) + if (Latency.slow(context, role, c)) "（遅いので後回し）" else "" } ?: ""),
                 style = MaterialTheme.typography.bodySmall,
                 color = if (wait > 0) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.onSurface,

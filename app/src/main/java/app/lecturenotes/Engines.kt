@@ -51,8 +51,12 @@ object Http {
         }
     }
 
+    /** いまの通信の相手が教えてくれた、今日あと何回使えるか（なければ null） */
+    val lastRemaining = ThreadLocal<Int?>()
+
     private fun read(c: HttpURLConnection): String {
         val code = c.responseCode
+        lastRemaining.set(c.getHeaderField("x-ratelimit-remaining-requests")?.trim()?.toIntOrNull())
         val stream = if (code in 200..299) c.inputStream else c.errorStream
         val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
         if (code == 429 || code == 503 || code == 502 || code == 500) {

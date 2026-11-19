@@ -7,6 +7,7 @@ class App : Application() {
         super.onCreate()
         Repo.init(this)
         Meta.init(this)
+        Usage.init(this)
         Processor.start(this)
     }
 }

@@ -157,6 +157,42 @@ class RecorderService : Service() {
         Live.state.update { it.copy(partial = "") }
     }
 
+    private var lastWarning: String? = null
+
+    /** 通話中・ほかのアプリがマイクを使っているときは、録音が無音になるので知らせる */
+    private fun checkMicTaken(rec: AudioRecord, am: android.media.AudioManager?) {
+        val inCall = am?.mode == android.media.AudioManager.MODE_IN_CALL ||
+            am?.mode == android.media.AudioManager.MODE_IN_COMMUNICATION
+        val silenced = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+            (rec.activeRecordingConfiguration?.isClientSilenced == true)
+        val w = when {
+            inCall -> "📞 通話中は録音できません（この間は無音になります）"
+            silenced -> "🎤 ほかのアプリがマイクを使っています（この間は無音になります）"
+            else -> null
+        }
+        if (w != lastWarning) {
+            lastWarning = w
+            Live.state.update { it.copy(warning = w) }
+            updateNotification(w)
+        }
+    }
+
+    private fun updateNotification(warning: String?) {
+        val nm = getSystemService(NotificationManager::class.java)
+        val open = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val n = NotificationCompat.Builder(this, CHANNEL)
+            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setContentTitle(if (warning != null) "録音が止まっています" else "録音中")
+            .setContentText(warning ?: "たっぴぃず録音が録音しています")
+            .setContentIntent(open)
+            .setOngoing(true)
+            .build()
+        nm.notify(1, n)
+    }
+
     /** マイクが使えなかったとき：録音中の表示のまま止まらないよう、録音を終える */
     private fun failMic(msg: String) {
         running = false
@@ -185,6 +221,8 @@ class RecorderService : Service() {
         }
         rec.startRecording()
         val buf = ShortArray(SAMPLE_RATE / 10) // 0.1秒
+        val audioManager = getSystemService(android.media.AudioManager::class.java)
+        var tick = 0
         android.os.Handler(mainLooper).post { updateLocal() }
 
         val session = Repo.get(id) ?: return
@@ -227,6 +265,8 @@ class RecorderService : Service() {
                 if (settings.voiceChangeHints) voice.feed(buf, n, rms, startMs + (samples - n) * 1000L / SAMPLE_RATE)
                 if (rms > 120) loudFrames++
                 Live.level.value = (rms / 4000.0).coerceIn(0.0, 1.0).toFloat()
+                // 1秒ごとに、通話などでマイクが取られていないかを見る
+                if (++tick % 10 == 0) checkMicTaken(rec, audioManager)
                 val quiet = rms < maxOf(150.0, rmsSum / frames * 0.35)
                 if (quiet) quietRun++ else {
                     quietRun = 0
