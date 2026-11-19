@@ -104,6 +104,12 @@ class Settings(context: Context) {
             Power.dim.value = v
         }
 
+    /** マイクの取り方（MicSource.key） */
+    var micSource by str("micSource", "mic")
+
+    /** 小さい音を自動で大きくする */
+    var autoGain by bool("autoGain", true)
+
     /** 文章にならない音（無音・音楽・ざわめき）がこの分数続いたら自動で止める（0 = 止めない） */
     var noTextStopMinutes by int("noTextStopMinutes", 5)
 

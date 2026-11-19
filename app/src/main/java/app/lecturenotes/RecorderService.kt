@@ -277,21 +277,15 @@ class RecorderService : Service() {
 
     @SuppressLint("MissingPermission")
     private fun recordLoop(id: String) {
-        val minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        val rec = try {
-            AudioRecord(
-                MediaRecorder.AudioSource.MIC, SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuf, SAMPLE_RATE * 2),
-            )
-        } catch (e: Exception) {
-            failMic("マイクを使えません: ${e.message}")
-            return
-        }
-        if (rec.state != AudioRecord.STATE_INITIALIZED) {
-            rec.release()
+        // 設定のマイクの取り方で開く（だめなら標準）
+        val opened = AudioInput.open(MicSource.of(settings.micSource))
+        if (opened == null) {
             failMic("マイクを使えません（マイクの権限を確認してください）")
             return
         }
+        val rec = opened.first
+        val gainer = AutoGain()
+        var rawAvg = 0.0
         rec.startRecording()
         val buf = ShortArray(SAMPLE_RATE / 10) // 0.1秒
         val audioManager = getSystemService(android.media.AudioManager::class.java)
@@ -327,17 +321,19 @@ class RecorderService : Service() {
             while (running && samples < maxSamples) {
                 val n = rec.read(buf, 0, buf.size)
                 if (n <= 0) continue
+                // 大きさは書き換える前の音で見る（無音の判断などがぶれないように）
+                val rms = AudioInput.rms(buf, n)
+                rawAvg = if (rawAvg == 0.0) rms else rawAvg * 0.995 + rms * 0.005
+                // 小さい音を、割れない範囲で大きくしてから保存・送信する
+                if (settings.autoGain) gainer.process(buf, n, rms, isVoice = rms > maxOf(150.0, rawAvg * 0.8))
                 writer.write(buf, n)
                 local?.feed(buf, n)
                 samples += n
-                var sum = 0.0
-                for (i in 0 until n) sum += buf[i].toDouble() * buf[i]
-                val rms = sqrt(sum / n)
                 frames++
                 rmsSum += rms
                 if (settings.voiceChangeHints) voice.feed(buf, n, rms, startMs + (samples - n) * 1000L / SAMPLE_RATE)
                 if (rms > 120) loudFrames++
-                Live.level.value = (rms / 4000.0).coerceIn(0.0, 1.0).toFloat()
+                Live.level.value = (rms * (if (settings.autoGain) gainer.gain else 1.0) / 4000.0).coerceIn(0.0, 1.0).toFloat()
                 // 1秒ごとに、通話などでマイクが取られていないか・無音が続いていないかを見る
                 if (++tick % 10 == 0) {
                     checkMicTaken(rec, audioManager)

@@ -184,6 +184,8 @@ sealed interface Screen {
     data class GlossaryEdit(val back: Config) : Screen
     /** 予定から枠を作る */
     data object Plan : Screen
+    /** 音のテスト */
+    data object SoundTestS : Screen
 }
 
 @Composable
@@ -215,8 +217,10 @@ fun AppRoot() {
                 onOpen = { id, info, q -> screen = Screen.Detail(id, info, q) },
                 onSettings = { screen = Screen.Config(Screen.Home) },
                 onPlan = { screen = Screen.Plan },
+                onSoundTest = { screen = Screen.SoundTestS },
             )
             Screen.Plan -> PlanScreen(onBack = { screen = Screen.Home })
+            Screen.SoundTestS -> SoundTestScreen(onBack = { screen = Screen.Home })
             is Screen.Detail -> DetailScreen(
                 s.id, s.openInfo, s.query,
                 onBack = { screen = Screen.Home },
@@ -252,7 +256,7 @@ private fun Header(
 // ---------------- 一覧 ----------------
 
 @Composable
-fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit, onPlan: () -> Unit) {
+fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit, onPlan: () -> Unit, onSoundTest: () -> Unit) {
     val context = LocalContext.current
     val sessions by Repo.sessions.collectAsState()
     val live by Live.state.collectAsState()
@@ -296,7 +300,10 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
                 trailingIcon = { if (homeQuery.isNotEmpty()) IconBtn(Icons.Default.Close, "消す") { homeQuery = "" } },
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             )
-            TextButton(onClick = onPlan) { Text("📅 予定から枠を作る（大会のプログラムなど）") }
+            Row {
+                TextButton(onClick = onPlan) { Text("📅 予定から枠を作る") }
+                TextButton(onClick = onSoundTest) { Text("🎤 音のテスト") }
+            }
             // ラベルで絞り込む
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(vertical = 4.dp)) {
                 FilterChip(selected = filter == null, onClick = { filter = null }, label = { Text("すべて") })
@@ -1825,6 +1832,27 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
             LabelSpeakerSettings()
 
             Section("録音")
+            Text("マイクの取り方（「🎤 音のテスト」で比べて自動で選べます）", style = MaterialTheme.typography.bodySmall)
+            var mic by remember { mutableStateOf(st.micSource) }
+            MicSource.available(context).forEach { m ->
+                Row(
+                    Modifier.fillMaxWidth().selectable(selected = mic == m.key, onClick = { mic = m.key; st.micSource = m.key })
+                        .padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    RadioButton(selected = mic == m.key, onClick = null)
+                    Column(Modifier.padding(start = 8.dp)) {
+                        Text(m.label)
+                        Text(m.help, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                    }
+                }
+            }
+            var gainOn by remember { mutableStateOf(st.autoGain) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = gainOn, onCheckedChange = { gainOn = it; st.autoGain = it })
+                Text("小さい音を自動で大きくする（割れない範囲で）", Modifier.padding(start = 8.dp))
+            }
+            Text("録音中に変えたときは、次に録音を始めたときから効きます。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
             var noText by remember { mutableStateOf(st.noTextStopMinutes.toString()) }
             Field("文章にならない音が何分続いたら止めるか（0 = 止めない）", noText, KeyboardType.Number) {
                 noText = it; it.toIntOrNull()?.let { v -> st.noTextStopMinutes = v.coerceIn(0, 240) }
