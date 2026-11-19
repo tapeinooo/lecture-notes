@@ -15,6 +15,11 @@ fun fmtClock(ms: Long): String {
 
 fun fmtDate(ms: Long): String = SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.JAPAN).format(Date(ms))
 
+/** 「2026/11/20（金）」 */
+fun fmtDay(ms: Long): String = SimpleDateFormat("yyyy/MM/dd（E）", Locale.JAPAN).format(Date(ms))
+
+fun fmtTime(ms: Long): String = SimpleDateFormat("HH:mm", Locale.JAPAN).format(Date(ms))
+
 fun engineLabel(e: String?, model: String? = null): String = model ?: when (e) {
     "groq" -> "Groq"
     "gemini" -> "Gemini"
@@ -27,7 +32,7 @@ object Export {
     private fun safeName(s: String) = s.replace(Regex("[\\\\/:*?\"<>|\\s]+"), "_").take(60).ifEmpty { "lecture" }
 
     fun markdown(s: Session): String = buildString {
-        append("# ${s.title}\n\n")
+        append("# ${s.shownTitle}\n\n")
         append("- 録音日時：${fmtDate(s.startedAt)}\n")
         append("- 録音時間：${fmtClock(s.durationMs)}\n")
         if (s.speaker.isNotBlank()) append("- 話し手：${s.speaker}\n")

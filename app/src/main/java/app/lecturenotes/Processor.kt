@@ -131,7 +131,17 @@ object Processor {
 
     // ---------- 1回分の仕事 ----------
 
+    /** タイトルを自動で付ける記録は、文字起こしの出だしに合わせる */
+    private fun updateAutoTitles() {
+        for (s in Repo.sessions.value) {
+            if (!s.titleAuto) continue
+            val t = autoTitle(s) ?: continue
+            if (t != s.title) Repo.update(s.id) { if (it.titleAuto) it.copy(title = t) else it }
+        }
+    }
+
     private fun step(): Boolean {
+        updateAutoTitles()
         val sessions = Repo.sessions.value.sortedByDescending { it.recording }
         val online = Net.online(app)
 

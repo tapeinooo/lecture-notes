@@ -151,7 +151,7 @@ class MainActivity : ComponentActivity() {
 sealed interface Screen {
     data object Home : Screen
     /** openInfo = 情報欄を開いた状態で表示する（新しく録音したとき） */
-    data class Detail(val id: String, val openInfo: Boolean = false) : Screen
+    data class Detail(val id: String, val openInfo: Boolean = false, val query: String = "") : Screen
     /** 設定。back は戻る先（録音中の画面から開いたら、そこへ戻る） */
     data class Config(val back: Screen) : Screen
     data class GlossaryEdit(val back: Config) : Screen
@@ -183,11 +183,11 @@ fun AppRoot() {
     Box(Modifier.fillMaxSize().safeDrawingPadding()) {
         when (val s = screen) {
             Screen.Home -> HomeScreen(
-                onOpen = { id, info -> screen = Screen.Detail(id, info) },
+                onOpen = { id, info, q -> screen = Screen.Detail(id, info, q) },
                 onSettings = { screen = Screen.Config(Screen.Home) },
             )
             is Screen.Detail -> DetailScreen(
-                s.id, s.openInfo,
+                s.id, s.openInfo, s.query,
                 onBack = { screen = Screen.Home },
                 onSettings = { screen = Screen.Config(s.copy(openInfo = false)) },
             )
@@ -214,7 +214,7 @@ private fun Header(title: String, onBack: (() -> Unit)?, actions: @Composable ()
 // ---------------- 一覧 ----------------
 
 @Composable
-fun HomeScreen(onOpen: (String, Boolean) -> Unit, onSettings: () -> Unit) {
+fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit) {
     val context = LocalContext.current
     val sessions by Repo.sessions.collectAsState()
     val live by Live.state.collectAsState()
@@ -237,9 +237,10 @@ fun HomeScreen(onOpen: (String, Boolean) -> Unit, onSettings: () -> Unit) {
             Button(
                 onClick = {
                     // すぐ録音を始める（名前・話し手・ラベルは録音しながら入れられる）
-                    val s = Repo.create(fmtDate(System.currentTimeMillis()))
+                    // タイトルは空のまま始め、文字起こしの出だしを自動で入れる
+                    val s = Repo.create("")
                     RecorderService.start(context, s.id)
-                    onOpen(s.id, true)
+                    onOpen(s.id, true, "")
                 },
                 enabled = live.sessionId == null,
                 modifier = Modifier.fillMaxWidth().height(56.dp),
@@ -261,18 +262,23 @@ fun HomeScreen(onOpen: (String, Boolean) -> Unit, onSettings: () -> Unit) {
             }
         }
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-            items(shown, key = { it.id }) { s ->
+            shown.forEachIndexed { i, s ->
+                val day = fmtDay(s.startedAt)
+                if (i == 0 || fmtDay(shown[i - 1].startedAt) != day) {
+                    item(key = "day-$day-$i") { DaySeparator(day) }
+                }
+                item(key = s.id) {
                 val recording = live.sessionId == s.id
                 Card(
-                    Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { onOpen(s.id, false) },
+                    Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { onOpen(s.id, false, homeQuery.trim()) },
                 ) {
                     Column(Modifier.padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 4.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text(s.title, style = MaterialTheme.typography.titleMedium)
+                                Text(s.shownTitle, style = MaterialTheme.typography.titleMedium, maxLines = 2)
                                 Text(
                                     listOfNotNull(
-                                        fmtDate(s.startedAt),
+                                        fmtTime(s.startedAt),
                                         fmtClock(s.durationMs),
                                         s.speaker.ifBlank { null },
                                         if (recording) "● 録音中" else null,
@@ -313,6 +319,7 @@ fun HomeScreen(onOpen: (String, Boolean) -> Unit, onSettings: () -> Unit) {
                         }
                     }
                 }
+                }
             }
             if (shown.isEmpty()) {
                 item {
@@ -324,6 +331,16 @@ fun HomeScreen(onOpen: (String, Boolean) -> Unit, onSettings: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+/** 一覧の日付の区切り（細い線と小さな日付） */
+@Composable
+private fun DaySeparator(day: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 2.dp)) {
+        Text(day, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+        Spacer(Modifier.width(8.dp))
+        HorizontalDivider(Modifier.weight(1f), color = MaterialTheme.colorScheme.outlineVariant)
     }
 }
 
@@ -339,7 +356,7 @@ private fun matchesSession(s: Session, q: String): Boolean {
 private fun InfoPanel(s: Session, liveMs: Long?, onClose: () -> Unit) {
     val labels by Meta.labels.collectAsState()
     Meta.speakers.collectAsState().value // 候補が増えたら描き直す
-    var title by remember(s.id) { mutableStateOf(s.title) }
+    var title by remember(s.id) { mutableStateOf(if (s.titleAuto) "" else s.title) }
     var speaker by remember(s.id) { mutableStateOf(s.speaker) }
     var newLabel by remember { mutableStateOf("") }
     // 画面を離れるときも、話し手を候補に残す
@@ -354,7 +371,8 @@ private fun InfoPanel(s: Session, liveMs: Long?, onClose: () -> Unit) {
     ) {
         OutlinedTextField(
             value = title,
-            onValueChange = { v -> title = v; Repo.update(s.id) { it.copy(title = v) } },
+            onValueChange = { v -> title = v; Repo.update(s.id) { it.copy(title = v, titleAuto = v.isBlank()) } },
+            placeholder = { Text("空なら文字起こしの出だしが入ります") },
             label = { Text("タイトル") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
@@ -449,7 +467,7 @@ private fun UpdateBanner() {
 // ---------------- 記録 ----------------
 
 @Composable
-fun DetailScreen(id: String, openInfo: Boolean, onBack: () -> Unit, onSettings: () -> Unit) {
+fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: () -> Unit, onSettings: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val sessions by Repo.sessions.collectAsState()
@@ -475,8 +493,9 @@ fun DetailScreen(id: String, openInfo: Boolean, onBack: () -> Unit, onSettings: 
 
     var menu by remember { mutableStateOf(false) }
     // 記録の中の検索
-    var searching by remember { mutableStateOf(false) }
-    var query by remember { mutableStateOf("") }
+    // 一覧の検索から開いたときは、その言葉に印を付けた状態で開く
+    var searching by remember { mutableStateOf(initialQuery.isNotBlank()) }
+    var query by remember { mutableStateOf(initialQuery) }
     var hitPos by remember { mutableStateOf(0) }
 
     /** 直している区間と、入力中の文（画面の段落が並び替わっても消えないよう、ここで持つ） */
@@ -519,7 +538,7 @@ fun DetailScreen(id: String, openInfo: Boolean, onBack: () -> Unit, onSettings: 
     }
 
     Column(Modifier.fillMaxSize()) {
-        Header(s.title, onBack) {
+        Header(s.shownTitle, onBack) {
             IconBtn(Icons.Default.Search, "この記録の中を探す") { searching = !searching; if (!searching) query = "" }
             IconBtn(Icons.Default.SettingsIcon, "設定") { onSettings() }
             Box {
@@ -586,7 +605,10 @@ fun DetailScreen(id: String, openInfo: Boolean, onBack: () -> Unit, onSettings: 
                 IconBtn(Icons.Default.KeyboardArrowDown, "次へ", enabled = hits.isNotEmpty()) {
                     hitPos = (hitPos + 1) % hits.size
                 }
-                IconBtn(Icons.Default.Close, "探すのをやめる") { searching = false; query = "" }
+                // 印を消して、ふつうの表示に戻す
+                TextButton(onClick = { searching = false; query = "" }, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                    Text("✕ 消す")
+                }
             }
         }
         LaunchedEffect(hits, hitPos) {
@@ -904,7 +926,8 @@ private fun Scrollbar(state: androidx.compose.foundation.lazy.LazyListState, mod
     }
 }
 
-private val SEARCH_COLOR = androidx.compose.ui.graphics.Color(0x6648A0FF)
+/** 検索で見つかった言葉の色（マーカーの緑・黄・赤と見分けやすい青紫） */
+private val SEARCH_COLOR = androidx.compose.ui.graphics.Color(0x807C4DFF)
 
 /** マーカーの色（g 緑・y 黄・r 赤）。文字が読めるよう半透明 */
 private fun markerColor(c: Char) = when (c) {
@@ -1043,7 +1066,13 @@ private fun PiecesText(pieces: List<Transcript.Piece>, query: String, onEdit: (S
             while (true) {
                 val k = text.text.indexOf(query, from, ignoreCase = true)
                 if (k < 0) break
-                addStyle(SpanStyle(background = SEARCH_COLOR, fontWeight = FontWeight.Bold), k, k + query.length)
+                addStyle(
+                    SpanStyle(
+                        background = SEARCH_COLOR, fontWeight = FontWeight.Bold,
+                        textDecoration = TextDecoration.Underline,
+                    ),
+                    k, k + query.length,
+                )
                 from = k + query.length
             }
         }

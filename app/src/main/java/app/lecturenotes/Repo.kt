@@ -49,10 +49,29 @@ data class Session(
     val speaker: String = "",
     /** ラベル（集会・講演・大会・その他 など） */
     val labels: List<String> = emptyList(),
+    /** タイトルを文字起こしの出だしから自動で付けるか（自分で入れたら false） */
+    val titleAuto: Boolean = false,
     /** 声が変わったらしい時刻（記録の中のミリ秒）。段落を区切る参考 */
     val voiceChanges: List<Long> = emptyList(),
 ) {
     val durationMs: Long get() = segments.lastOrNull()?.endMs ?: 0L
+
+    /** 画面に出すタイトル（まだなければ録音日時） */
+    val shownTitle: String get() = title.ifBlank { fmtDate(startedAt) }
+}
+
+/** 文字起こしの出だし（最初の一文、長ければ 28 字まで）。端末内の仮の文字は使わない */
+fun autoTitle(s: Session): String? {
+    val text = s.segments.asSequence()
+        .filter { !it.silent && it.rawEngine != "local" && it.rawEngine != "error" }
+        .mapNotNull { displayText(it)?.trim() }
+        .filter { it.isNotEmpty() }
+        .take(3).joinToString("")
+        .replace(Regex("\\s+"), " ").trim()
+    if (text.length < 4) return null
+    val end = text.indexOfFirst { it == '。' || it == '？' || it == '！' || it == '?' || it == '!' }
+    val first = if (end in 4..27) text.substring(0, end + 1) else text.take(28)
+    return first.trim().trimEnd('、', ',')
 }
 
 /** 記録の保存場所。files/sessions/<id>/session.json と audio/ */
@@ -82,7 +101,7 @@ object Repo {
     fun create(title: String): Session {
         val now = System.currentTimeMillis()
         val id = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date(now))
-        val s = Session(id, title, now, false, emptyList(), emptyList())
+        val s = Session(id, title, now, false, emptyList(), emptyList(), titleAuto = title.isBlank())
         dir(id).mkdirs()
         save(s)
         _sessions.value = (listOf(s) + _sessions.value).sortedByDescending { it.startedAt }
@@ -124,6 +143,7 @@ object Repo {
         put("recordedAt", fmtDate(s.startedAt))
         put("durationMs", s.durationMs)
         put("speaker", s.speaker)
+        put("titleAuto", s.titleAuto)
         put("labels", JSONArray(s.labels))
         put("voiceChanges", JSONArray(s.voiceChanges))
         put("recording", s.recording)
@@ -188,6 +208,7 @@ object Repo {
             },
             corrections = j.optJSONArray("corrections")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList(),
             speaker = j.optString("speaker"),
+            titleAuto = j.optBoolean("titleAuto"),
             labels = j.optJSONArray("labels")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList(),
             voiceChanges = j.optJSONArray("voiceChanges")?.let { a -> (0 until a.length()).map { a.getLong(it) } } ?: emptyList(),
         )
