@@ -198,14 +198,21 @@ fun AppRoot() {
 }
 
 @Composable
-private fun Header(title: String, onBack: (() -> Unit)?, actions: @Composable () -> Unit = {}) {
+private fun Header(
+    title: String, onBack: (() -> Unit)?,
+    onTitleClick: (() -> Unit)? = null,
+    actions: @Composable () -> Unit = {},
+) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         if (onBack != null) IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "戻る") }
         Text(
             title,
             style = MaterialTheme.typography.titleLarge,
-            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+            modifier = Modifier.weight(1f)
+                .let { if (onTitleClick != null) it.clickable(onClick = onTitleClick) else it }
+                .padding(horizontal = 8.dp, vertical = 6.dp),
             maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
         )
         actions()
     }
@@ -538,17 +545,18 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
     }
 
     Column(Modifier.fillMaxSize()) {
-        Header(s.shownTitle, onBack) {
+        Header(s.shownTitle, onBack, onTitleClick = { showInfo = !showInfo }) {
             IconBtn(Icons.Default.Search, "この記録の中を探す") { searching = !searching; if (!searching) query = "" }
             IconBtn(Icons.Default.SettingsIcon, "設定") { onSettings() }
             Box {
                 IconBtn(Icons.Default.MoreVert, "その他") { menu = true }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    DropdownMenuItem(text = { Text("文章を書き出す") }, onClick = {
+                    MenuHeader("共有")
+                    MenuItem("📤", "文章を送る") {
                         menu = false
                         Export.shareText(context, s)
-                    })
-                    DropdownMenuItem(text = { Text("音声を書き出す") }, onClick = {
+                    }
+                    MenuItem("🎧", "音声を送る") {
                         menu = false
                         scope.launch {
                             busy = "音声をまとめています…"
@@ -563,21 +571,24 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
                             }
                             busy = null
                         }
-                    })
-                    DropdownMenuItem(text = { Text("整形をやり直す（全部）") }, onClick = {
+                    }
+                    MenuHeader("編集")
+                    MenuItem("✏️", "タイトル・話し手・ラベル") { menu = false; showInfo = true }
+                    MenuHeader("AI にやり直させる（全部）")
+                    MenuItem("✨", "整形だけ") {
                         menu = false
                         Repo.update(id) { ss -> ss.copy(segments = ss.segments.map { it.copy(formatted = null, polished = false) }) }
                         Processor.wake()
-                    })
-                    DropdownMenuItem(text = { Text("文字起こしからやり直す（全部）") }, onClick = {
+                    }
+                    MenuItem("🔁", "文字起こしから") {
                         menu = false
                         Repo.update(id) { ss ->
                             ss.copy(segments = ss.segments.map { it.copy(raw = null, rawEngine = null, formatted = null, polished = false, error = null) })
                         }
                         Processor.wake()
-                    })
-                    DropdownMenuItem(text = { Text("情報（タイトル・話し手・ラベル）") }, onClick = { menu = false; showInfo = true })
-                    DropdownMenuItem(text = { Text("削除する") }, enabled = !isRec, onClick = { menu = false; confirmDelete = true })
+                    }
+                    HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                    MenuItem("🗑", "削除", danger = true, enabled = !isRec) { menu = false; confirmDelete = true }
                 }
             }
         }
@@ -1444,6 +1455,28 @@ private fun ColorDot(c: Char, selected: Boolean, onClick: () -> Unit) {
             if (selected) drawCircle(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.6f), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx()))
         }
     }
+}
+
+/** メニューの分類の見出し */
+@Composable
+private fun MenuHeader(label: String) {
+    Text(
+        label,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.outline,
+        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 2.dp),
+    )
+}
+
+/** メニューの1行（絵文字＋短い言葉） */
+@Composable
+private fun MenuItem(emoji: String, label: String, danger: Boolean = false, enabled: Boolean = true, onClick: () -> Unit) {
+    DropdownMenuItem(
+        leadingIcon = { Text(emoji, fontSize = 18.sp) },
+        text = { Text(label, color = if (danger && enabled) MaterialTheme.colorScheme.error else androidx.compose.ui.graphics.Color.Unspecified) },
+        enabled = enabled,
+        onClick = onClick,
+    )
 }
 
 /** 確定（✓）。いつも右端に置く（右手の親指が届くところ） */
