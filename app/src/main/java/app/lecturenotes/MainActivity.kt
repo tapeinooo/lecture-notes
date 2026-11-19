@@ -56,6 +56,22 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Settings as SettingsIcon
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Button
@@ -181,7 +197,7 @@ fun AppRoot() {
 @Composable
 private fun Header(title: String, onBack: (() -> Unit)?, actions: @Composable () -> Unit = {}) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        if (onBack != null) TextButton(onClick = onBack) { Text("← 戻る") }
+        if (onBack != null) IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "戻る") }
         Text(
             title,
             style = MaterialTheme.typography.titleLarge,
@@ -206,7 +222,7 @@ fun HomeScreen(onOpen: (String, Boolean) -> Unit, onSettings: () -> Unit) {
 
     Column(Modifier.fillMaxSize()) {
         Header("たっぴぃず録音", null) {
-            TextButton(onClick = onSettings, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("⚙", fontSize = 22.sp) }
+            IconBtn(Icons.Default.SettingsIcon, "設定") { onSettings() }
         }
         Column(Modifier.padding(horizontal = 16.dp)) {
             Text("版 ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.labelSmall)
@@ -258,22 +274,26 @@ fun HomeScreen(onOpen: (String, Boolean) -> Unit, onSettings: () -> Unit) {
                                 }
                             }
                             if (!recording) {
-                                TextButton(onClick = { confirmDelete = if (confirmDelete == s.id) null else s.id }) { Text("🗑") }
+                                IconBtn(Icons.Default.Delete, "削除", tint = MaterialTheme.colorScheme.outline) {
+                                    confirmDelete = if (confirmDelete == s.id) null else s.id
+                                }
                             }
                         }
                         if (confirmDelete == s.id) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
-                                    "録音と文字がすべて消えます。元に戻せません。",
-                                    style = MaterialTheme.typography.bodySmall,
+                                    "🗑 削除する？（戻せません）",
+                                    style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.error,
                                     modifier = Modifier.weight(1f),
                                 )
-                                TextButton(onClick = { confirmDelete = null }) { Text("やめる") }
-                                Button(
+                                IconBtn(Icons.Default.Close, "やめる") { confirmDelete = null }
+                                Spacer(Modifier.width(4.dp))
+                                FilledIconButton(
                                     onClick = { confirmDelete = null; Repo.delete(s.id) },
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                                ) { Text("削除") }
+                                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.error),
+                                    modifier = Modifier.size(40.dp),
+                                ) { Icon(Icons.Default.Delete, contentDescription = "削除する") }
                             }
                         }
                     }
@@ -344,7 +364,7 @@ private fun InfoPanel(s: Session, liveMs: Long?, onClose: () -> Unit) {
                 value = newLabel, onValueChange = { newLabel = it },
                 placeholder = { Text("新しいラベル") }, singleLine = true, modifier = Modifier.weight(1f),
             )
-            SmallBtn("＋ 足す", enabled = newLabel.isNotBlank()) {
+            IconBtn(Icons.Default.Add, "ラベルを足す", enabled = newLabel.isNotBlank()) {
                 val l = newLabel.trim()
                 Meta.addLabel(l)
                 Repo.update(s.id) { it.copy(labels = (it.labels + l).distinct()) }
@@ -358,7 +378,7 @@ private fun InfoPanel(s: Session, liveMs: Long?, onClose: () -> Unit) {
                 color = MaterialTheme.colorScheme.outline,
                 modifier = Modifier.weight(1f),
             )
-            SmallBtn("閉じる", primary = true) {
+            OkBtn(desc = "閉じる") {
                 Meta.addSpeaker(speaker)
                 onClose()
             }
@@ -462,9 +482,9 @@ fun DetailScreen(id: String, openInfo: Boolean, onBack: () -> Unit, onSettings: 
 
     Column(Modifier.fillMaxSize()) {
         Header(s.title, onBack) {
-            TextButton(onClick = onSettings, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("⚙", fontSize = 22.sp) }
+            IconBtn(Icons.Default.SettingsIcon, "設定") { onSettings() }
             Box {
-                TextButton(onClick = { menu = true }) { Text("…") }
+                IconBtn(Icons.Default.MoreVert, "その他") { menu = true }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     DropdownMenuItem(text = { Text("文章を書き出す") }, onClick = {
                         menu = false
@@ -658,7 +678,9 @@ private fun RecordControls(s: Session, isRec: Boolean, otherRec: Boolean, live: 
                 Spacer(Modifier.width(8.dp))
                 LevelBar(Modifier.weight(1f))
                 Spacer(Modifier.width(8.dp))
-                OutlinedButton(onClick = onMark, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("★") }
+                OutlinedButton(onClick = onMark, contentPadding = PaddingValues(horizontal = 12.dp)) {
+                    Icon(Icons.Default.Star, contentDescription = "印を付ける", tint = MaterialTheme.colorScheme.tertiary)
+                }
                 Spacer(Modifier.width(6.dp))
                 Button(
                     onClick = {
@@ -672,7 +694,7 @@ private fun RecordControls(s: Session, isRec: Boolean, otherRec: Boolean, live: 
                         contentColor = if (stopArmed) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onErrorContainer,
                     ),
                     contentPadding = PaddingValues(horizontal = 12.dp),
-                ) { Text(if (stopArmed) "もう一度で停止" else "停止") }
+                ) { Text(if (stopArmed) "■ もう一度" else "■ 停止") }
             }
             Text(live.engine, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
             live.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
@@ -1069,14 +1091,10 @@ private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment, Int) ->
         // マーカーを選んでいるときの小さな操作
         selRange?.let { r ->
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(end = GUTTER)) {
-                Text(
-                    "🖍 両端の●で長さを調整",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = cs.outline,
-                    modifier = Modifier.weight(1f),
-                )
-                SmallBtn("消す") { removeSelected() }
-                SmallBtn("完了", primary = true) { selRange = null; selSaved = emptyList() }
+                Text("🖍 ◀ ▶", style = MaterialTheme.typography.labelMedium, color = cs.outline, modifier = Modifier.weight(1f))
+                IconBtn(Icons.Default.Delete, "マーカーを消す", tint = cs.error) { removeSelected() }
+                Spacer(Modifier.width(4.dp))
+                OkBtn(desc = "マーカーを確定") { selRange = null; selSaved = emptyList() }
             }
         }
     }
@@ -1148,17 +1166,11 @@ private fun InlineEditor(
             modifier = Modifier.fillMaxWidth().focusRequester(focus)
                 .onGloballyPositioned { fieldTop = it.positionInWindow().y },
         )
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        // 左：補助（⋯・🖍）　右：✕ と ✓（よく使う確定がいちばん右）
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             val sel = field.selection
-            SmallBtn("確定", primary = true) { save() }
-            SmallBtn("やめる") { onClose() }
-            SmallBtn("🖍 選んだ所", enabled = !sel.collapsed) {
-                Marker.add(s.id, g.index, field.text.substring(sel.min, sel.max))
-                field = field.copy(selection = androidx.compose.ui.text.TextRange(sel.max))
-            }
-            SmallBtn(if (Marker.WHOLE in g.highlights) "🖍 全体を消す" else "🖍 全体") { Marker.toggleWhole(s.id, g.index) }
             Box {
-                SmallBtn("…") { more = true }
+                IconBtn(Icons.Default.MoreVert, "その他") { more = true }
                 DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
                     DropdownMenuItem(text = { Text(if (showRaw) "元の文字起こしを隠す" else "元の文字起こしを見る") }, onClick = { more = false; showRaw = !showRaw })
                     if (g.edited != null) {
@@ -1180,11 +1192,19 @@ private fun InlineEditor(
                     })
                 }
             }
+            EmojiBtn("🖍", "選んだ文字にマーカー", enabled = !sel.collapsed) {
+                Marker.add(s.id, g.index, field.text.substring(sel.min, sel.max))
+                field = field.copy(selection = androidx.compose.ui.text.TextRange(sel.max))
+            }
+            Spacer(Modifier.weight(1f))
+            IconBtn(Icons.Default.Close, "やめる") { onClose() }
+            Spacer(Modifier.width(4.dp))
+            OkBtn { save() }
         }
         g.highlights.filter { it != Marker.WHOLE }.forEach { h ->
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("🖍 $h", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                SmallBtn("×") { Marker.remove(s.id, g.index, h) }
+                IconBtn(Icons.Default.Close, "このマーカーを消す") { Marker.remove(s.id, g.index, h) }
             }
         }
         if (showRaw) {
@@ -1207,6 +1227,31 @@ private fun SmallBtn(label: String, enabled: Boolean = true, primary: Boolean = 
     ) { Text(label, fontWeight = if (primary) FontWeight.Bold else FontWeight.Normal) }
 }
 
+/** 確定（✓）。いつも右端に置く（右手の親指が届くところ） */
+@Composable
+private fun OkBtn(enabled: Boolean = true, desc: String = "確定", onClick: () -> Unit) {
+    FilledIconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(40.dp)) {
+        Icon(Icons.Default.Check, contentDescription = desc)
+    }
+}
+
+@Composable
+private fun IconBtn(
+    icon: androidx.compose.ui.graphics.vector.ImageVector, desc: String,
+    enabled: Boolean = true, tint: androidx.compose.ui.graphics.Color? = null, onClick: () -> Unit,
+) {
+    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(40.dp)) {
+        if (tint != null) Icon(icon, contentDescription = desc, tint = tint) else Icon(icon, contentDescription = desc)
+    }
+}
+
+@Composable
+private fun EmojiBtn(emoji: String, desc: String, enabled: Boolean = true, onClick: () -> Unit) {
+    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(40.dp).semantics { contentDescription = desc }) {
+        Text(emoji, fontSize = 20.sp, modifier = Modifier.graphicsLayer { alpha = if (enabled) 1f else 0.3f })
+    }
+}
+
 /** 「直し方を覚えました」を、画面の下に帯で出す */
 @Composable
 private fun LearnedBar(s: Session, segIndex: Int, fixes: List<Corrections.Fix>, onClose: () -> Unit) {
@@ -1219,19 +1264,29 @@ private fun LearnedBar(s: Session, segIndex: Int, fixes: List<Corrections.Fix>, 
             .background(MaterialTheme.colorScheme.tertiaryContainer, RoundedCornerShape(8.dp))
             .padding(horizontal = 8.dp, vertical = 4.dp),
     ) {
-        Text("覚えた直し：${fixes.joinToString("、")}（この先の文字起こし・整形に使います）", style = MaterialTheme.typography.bodySmall)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            SmallBtn(if (addedGlossary) "用語集に足しました" else "用語集にも足す", enabled = !addedGlossary) {
-                Glossary.append(context, fixes.map { it.toString() }, "直したところから")
-                addedGlossary = true
-            }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("💡 ${fixes.joinToString("、")}", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+            IconBtn(Icons.Default.Close, "閉じる") { onClose() }
+        }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            AssistChip(
+                onClick = {
+                    Glossary.append(context, fixes.map { it.toString() }, "直したところから")
+                    addedGlossary = true
+                },
+                enabled = !addedGlossary,
+                label = { Text(if (addedGlossary) "📖 ✓" else "📖 用語集へ") },
+            )
             if (others > 0) {
-                SmallBtn(if (fixedOthers) "直しました" else "ほかの${others}か所も直す", enabled = !fixedOthers) {
-                    Corrections.applyToOthers(s.id, segIndex, fixes)
-                    fixedOthers = true
-                }
+                AssistChip(
+                    onClick = {
+                        Corrections.applyToOthers(s.id, segIndex, fixes)
+                        fixedOthers = true
+                    },
+                    enabled = !fixedOthers,
+                    label = { Text(if (fixedOthers) "🔁 ✓" else "🔁 ほか${others}か所も") },
+                )
             }
-            SmallBtn("閉じる") { onClose() }
         }
     }
 }
@@ -1244,12 +1299,12 @@ private fun NoteBar(timeMs: Long, onSave: (String) -> Unit, onClose: () -> Unit)
         Text("★ ${fmtClock(timeMs)}", color = MaterialTheme.colorScheme.tertiary, fontWeight = FontWeight.Bold)
         OutlinedTextField(
             value = note, onValueChange = { note = it },
-            placeholder = { Text("メモ（なくてもよい）") },
+            placeholder = { Text("メモ") },
             singleLine = true,
             modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
         )
-        SmallBtn("保存", primary = true, enabled = note.isNotBlank()) { onSave(note.trim()) }
-        SmallBtn("×") { onClose() }
+        IconBtn(Icons.Default.Close, "メモなしで閉じる") { onClose() }
+        OkBtn(enabled = note.isNotBlank(), desc = "メモを保存") { onSave(note.trim()) }
     }
 }
 
@@ -1462,7 +1517,7 @@ private fun LabelSpeakerSettings() {
             value = newLabel, onValueChange = { newLabel = it },
             placeholder = { Text("新しいラベル") }, singleLine = true, modifier = Modifier.weight(1f),
         )
-        SmallBtn("＋ 足す", enabled = newLabel.isNotBlank()) { Meta.addLabel(newLabel); newLabel = "" }
+        IconBtn(Icons.Default.Add, "ラベルを足す", enabled = newLabel.isNotBlank()) { Meta.addLabel(newLabel); newLabel = "" }
     }
     SmallBtn("最初のラベル（集会・講演・大会・その他）に戻す") { Meta.resetLabels() }
     Text("話し手の候補（× で消す）", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
