@@ -26,6 +26,17 @@ import kotlin.math.sqrt
  */
 class RecorderService : Service() {
     companion object {
+        /** いま動いている録音のサービス（ほかから止めるため） */
+        @Volatile var current: RecorderService? = null
+
+        /** 理由を知らせて録音を止める（画面の帯と通知） */
+        fun stopWithNotice(context: Context, message: String) {
+            Notice.show(context, message)
+            val svc = current
+            if (svc != null) android.os.Handler(context.mainLooper).post { svc.finishFromOutside() }
+            else stop(context)
+        }
+
         private const val ACTION_START = "start"
         private const val ACTION_STOP = "stop"
         private const val EXTRA_ID = "id"
@@ -51,6 +62,16 @@ class RecorderService : Service() {
     private lateinit var settings: Settings
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        current = this
+    }
+
+    fun finishFromOutside() {
+        // 録音の流れがまだ残っていれば止める（止めかけで running が false になっていても）
+        if (running || thread != null) finish()
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -156,6 +177,7 @@ class RecorderService : Service() {
             screenRegistered = false
         }
         if (running) finish()
+        if (current === this) current = null
         super.onDestroy()
     }
 
@@ -323,9 +345,8 @@ class RecorderService : Service() {
                     if (limitMin > 0) {
                         val since = maxOf(Live.lastVoiceAt, Live.state.value.startedAt)
                         if (since > 0 && System.currentTimeMillis() - since > limitMin * 60_000L) {
-                            Processor.status.value = "無音が${limitMin}分続いたので、録音を止めました"
                             running = false
-                            android.os.Handler(mainLooper).post { finish() }
+                            stopWithNotice(this, "無音が${limitMin}分続いたので、録音を止めました")
                         }
                     }
                 }

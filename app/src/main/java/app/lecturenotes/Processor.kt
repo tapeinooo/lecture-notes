@@ -271,6 +271,27 @@ object Processor {
             // 起こし直したら整形もやり直す
             it.copy(raw = text, rawEngine = c.provider, rawModel = c.model, formatted = null, formatModel = null, error = null)
         }
+        checkNoText(s.id)
+    }
+
+    /**
+     * 録音中、文章にならない音（無音・音楽・ざわめき）が決まった分数続いたら、知らせて録音を止める。
+     * 清書の結果で判断する（清書待ちの区間があれば、そこで数えるのをやめる＝止めない）。
+     */
+    private fun checkNoText(id: String) {
+        val limitMin = settings.noTextStopMinutes
+        if (limitMin <= 0) return
+        val s = Repo.get(id) ?: return
+        if (!s.recording) return
+        var ms = 0L
+        for (g in s.segments.asReversed()) {
+            val noText = g.silent || (g.raw != null && g.rawEngine != "local" && g.raw.isBlank())
+            if (!noText) break
+            ms += g.endMs - g.startMs
+        }
+        if (ms >= limitMin * 60_000L) {
+            RecorderService.stopWithNotice(app, "文章にならない音が${limitMin}分以上続いたので、録音を止めました（「続きを録音」で再開できます）")
+        }
     }
 
     /** Whisper が無音などで出しがちな決まり文句を消す */

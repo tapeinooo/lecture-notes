@@ -272,6 +272,7 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
         Header("たっぴぃず録音", null) {
             IconBtn(Icons.Default.SettingsIcon, "設定") { onSettings() }
         }
+        NoticeBar()
         Column(Modifier.padding(horizontal = 16.dp)) {
             Text("版 ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.labelSmall)
             UpdateBanner()
@@ -697,6 +698,7 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
                 modifier = Modifier.fillMaxWidth().clickable { showInfo = true }.padding(horizontal = 16.dp, vertical = 2.dp),
             )
         }
+        NoticeBar()
         RecordControls(s, isRec, otherRec, live, now, onMark = {
             val t = live.elapsedMs()
             Repo.update(id) { it.copy(marks = it.marks + Mark(t, "")) }
@@ -819,6 +821,22 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
             },
             dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("やめる") } },
         )
+    }
+}
+
+/** 録音を自動で止めたときの知らせ（✕ で閉じるまで出す） */
+@Composable
+private fun NoticeBar() {
+    val msg by Notice.message.collectAsState()
+    val m = msg ?: return
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)
+            .background(MaterialTheme.colorScheme.tertiaryContainer, RoundedCornerShape(8.dp))
+            .padding(start = 10.dp),
+    ) {
+        Text("⏹ $m", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f).padding(vertical = 6.dp))
+        IconBtn(Icons.Default.Close, "閉じる") { Notice.message.value = null }
     }
 }
 
@@ -1807,6 +1825,10 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
             LabelSpeakerSettings()
 
             Section("録音")
+            var noText by remember { mutableStateOf(st.noTextStopMinutes.toString()) }
+            Field("文章にならない音が何分続いたら止めるか（0 = 止めない）", noText, KeyboardType.Number) {
+                noText = it; it.toIntOrNull()?.let { v -> st.noTextStopMinutes = v.coerceIn(0, 240) }
+            }
             var autoStop by remember { mutableStateOf(st.autoStopMinutes.toString()) }
             Field("無音が何分続いたら自動で止めるか（0 = 止めない）", autoStop, KeyboardType.Number) {
                 autoStop = it; it.toIntOrNull()?.let { v -> st.autoStopMinutes = v.coerceIn(0, 240) }

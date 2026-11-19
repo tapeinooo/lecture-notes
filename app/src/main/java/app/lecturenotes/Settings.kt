@@ -104,6 +104,9 @@ class Settings(context: Context) {
             Power.dim.value = v
         }
 
+    /** 文章にならない音（無音・音楽・ざわめき）がこの分数続いたら自動で止める（0 = 止めない） */
+    var noTextStopMinutes by int("noTextStopMinutes", 5)
+
     /** 無音がこの分数続いたら自動で録音を止める（0 = 止めない） */
     var autoStopMinutes by int("autoStopMinutes", 20)
 
