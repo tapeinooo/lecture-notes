@@ -1,19 +1,40 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- マイクと文字の行 -->
+<!-- 演台（開いた本・細い柱・台座）。中央の円（直径 66）に収まるよう縮めて中央に置く -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M42,30a8,8 0,0 1,16 0v18a8,8 0,0 1,-16 0z" />
-    <path
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="4"
-        android:fillColor="#00000000"
-        android:pathData="M36,46a14,14 0,0 0,28 0M50,60v10M42,72h16" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M64,40h12v4h-12zM64,50h10v4h-10zM64,60h8v4h-8z" />
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:scaleX="0.78"
+        android:scaleY="0.78"
+        android:translateY="1">
+        <!-- 開いた本 -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M54,33 C47,29 38,29 32,31 V44 C38,42 47,42 54,46 Z" />
+        <path
+            android:fillAlpha="0.85"
+            android:fillColor="#FFFFFF"
+            android:pathData="M54,33 C61,29 70,29 76,31 V44 C70,42 61,42 54,46 Z" />
+        <!-- 書見台 -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M32.5,47 H75.5 A2.5,2.5 0 0 1 78,49.5 V50.5 A2.5,2.5 0 0 1 75.5,53 H32.5 A2.5,2.5 0 0 1 30,50.5 V49.5 A2.5,2.5 0 0 1 32.5,47 Z" />
+        <!-- 柱 -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M44,53 H64 V81 H44 Z" />
+        <!-- 柱の縦の線 -->
+        <path
+            android:fillAlpha="0.55"
+            android:fillColor="#5B3E8E"
+            android:pathData="M51,57 H57 V77 H51 Z" />
+        <!-- 台座 -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M39,81 H69 A2,2 0 0 1 71,83 V83.5 A2,2 0 0 1 69,85.5 H39 A2,2 0 0 1 37,83.5 V83 A2,2 0 0 1 39,81 Z" />
+    </group>
 </vector>
