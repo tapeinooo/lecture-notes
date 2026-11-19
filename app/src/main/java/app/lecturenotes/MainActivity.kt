@@ -106,6 +106,10 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.animation.core.animateFloat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
@@ -417,6 +421,7 @@ fun DetailScreen(id: String, openInfo: Boolean, onBack: () -> Unit, onSettings: 
     }
     val isRec = live.sessionId == id
     val otherRec = live.sessionId != null && !isRec
+    currentSessionId = id
 
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(isRec) {
@@ -810,8 +815,30 @@ private fun ParaView(
 
 private data class SegRange(val start: Int, val end: Int, val seg: Segment, val text: String)
 
+/** すでにあるマーカーの位置（文字の範囲・区間・語句） */
+private data class HlRange(val start: Int, val end: Int, val seg: Segment, val phrase: String)
+
+/** 日本語の単語の切れ目 */
+private fun wordRange(text: String, off: Int): IntRange {
+    if (text.isEmpty()) return 0 until 0
+    val bi = android.icu.text.BreakIterator.getWordInstance(android.icu.util.ULocale.JAPANESE)
+    bi.setText(text)
+    val o = off.coerceIn(0, text.length - 1)
+    var st = if (bi.isBoundary(o)) o else bi.preceding(o)
+    var en = bi.following(o)
+    if (st == android.icu.text.BreakIterator.DONE) st = 0
+    if (en == android.icu.text.BreakIterator.DONE) en = text.length
+    return st until en
+}
+
+/**
+ * 段落の文。
+ *  - タップ：その位置にカーソルを置いて直す（マーカーをタップすると、そのマーカーを選ぶ）
+ *  - 横になぞる：なぞった単語にマーカー。離すと保存し、両端の ● で長さを調整できる
+ *  - 縦に動かす：ふつうにスクロール
+ */
 @Composable
-private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment, Int) -> Unit, onMark: (Segment) -> Unit) {
+private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment, Int) -> Unit, @Suppress("UNUSED_PARAMETER") onMark: (Segment) -> Unit) {
     val haptic = LocalHapticFeedback.current
     val uri = LocalUriHandler.current
     val cs = MaterialTheme.colorScheme
@@ -819,6 +846,7 @@ private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment, Int) ->
     val built = remember(pieces, cs) {
         val segRanges = ArrayList<SegRange>()
         val urlRanges = ArrayList<Triple<Int, Int, String>>()
+        val hlRanges = ArrayList<HlRange>()
         val stamps = ArrayList<Pair<Int, String>>() // 文字の位置と、分の打刻
         val text = buildAnnotatedString {
             for (p in pieces) {
@@ -837,14 +865,22 @@ private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment, Int) ->
                 withStyle(style) { append(if (p.kind == Transcript.Kind.MARK) " ${p.text} " else p.text) }
                 p.seg?.let { g ->
                     val bg = SpanStyle(background = MARKER_COLOR)
-                    if (Marker.WHOLE in g.highlights) addStyle(bg, start, length)
+                    if (Marker.WHOLE in g.highlights) {
+                        addStyle(bg, start, start + p.text.length)
+                        hlRanges.add(HlRange(start, start + p.text.length, g, Marker.WHOLE))
+                    }
                     val full = displayText(g) ?: ""
                     for (h in g.highlights) {
                         if (h == Marker.WHOLE) continue
-                        for (r in Marker.find(p.text, h)) addStyle(bg, start + r.first, start + r.last + 1)
+                        for (r in Marker.find(p.text, h)) {
+                            addStyle(bg, start + r.first, start + r.last + 1)
+                            hlRanges.add(HlRange(start + r.first, start + r.last + 1, g, h))
+                        }
                         // AI が書き換えて見つからなくなった語句は、区間の最後に残す
                         if (Marker.find(full, h).isEmpty() && full.trimEnd().endsWith(p.text.trimEnd())) {
+                            val ns = length
                             withStyle(bg) { append(" 🖍$h") }
+                            hlRanges.add(HlRange(ns, length, g, h))
                         }
                     }
                 }
@@ -857,62 +893,207 @@ private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment, Int) ->
                 p.seg?.let { segRanges.add(SegRange(start, length, it, p.text)) }
             }
         }
-        Triple(text, segRanges, urlRanges) to stamps
+        Built(text, segRanges, urlRanges, hlRanges, stamps)
     }
-    val (main, stamps) = built
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
-    Row(Modifier.fillMaxWidth()) {
-        Text(
-            main.first,
-            style = MaterialTheme.typography.bodyLarge,
-            onTextLayout = { layout = it },
-            modifier = Modifier.weight(1f).pointerInput(main) {
-                fun rangeAt(off: Int): SegRange? =
-                    main.second.firstOrNull { off in it.start until it.end } ?: main.second.lastOrNull { it.start <= off }
-                detectTapGestures(
-                    onLongPress = { pos ->
-                        val off = layout?.getOffsetForPosition(pos) ?: return@detectTapGestures
-                        rangeAt(off)?.let {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onMark(it.seg)
-                        }
-                    },
-                    onTap = { pos ->
-                        val off = layout?.getOffsetForPosition(pos) ?: return@detectTapGestures
-                        val url = main.third.firstOrNull { off in it.first until it.second }
-                        if (url != null) {
-                            uri.openUri(url.third)
-                            return@detectTapGestures
-                        }
-                        val r = rangeAt(off) ?: return@detectTapGestures
-                        // 押した文字の位置 → 区間の文の中の位置（カーソルをそこに置く）
-                        val full = displayText(r.seg) ?: ""
-                        val base = full.indexOf(r.text).coerceAtLeast(0)
-                        val inPiece = (off - r.start).coerceIn(0, r.text.length)
-                        onEdit(r.seg, (base + inPiece).coerceIn(0, full.length))
-                    },
-                )
-            },
-        )
-        // 右の余白：分の打刻を、その分が始まる行の高さに（スクロールバーのすぐ左）
-        Box(Modifier.width(GUTTER), contentAlignment = Alignment.TopEnd) {
-            val l = layout
-            if (l != null) {
-                for ((off, label) in stamps) {
-                    val line = l.getLineForOffset(off.coerceIn(0, (main.first.length - 1).coerceAtLeast(0)))
-                    val top = with(density) { l.getLineTop(line).toDp() }
-                    Text(
-                        label,
-                        fontSize = 10.sp,
-                        color = cs.outline.copy(alpha = 0.7f),
-                        modifier = Modifier.offset(y = top + 4.dp),
-                        maxLines = 1,
-                    )
+
+    // マーカーを引いている・選んでいるところ（文字の範囲）と、保存してある語句（区間の番号・語句）
+    var selRange by remember { mutableStateOf<IntRange?>(null) }
+    var selSaved by remember { mutableStateOf<List<Pair<Segment, String>>>(emptyList()) }
+
+    fun segAt(off: Int): SegRange? =
+        built.segs.firstOrNull { off in it.start until it.end } ?: built.segs.lastOrNull { it.start <= off }
+
+    /** 範囲を区間ごとの語句にして保存する（前に保存した語句は外す） */
+    fun commit(range: IntRange) {
+        val sid = currentSessionId ?: return
+        selSaved.forEach { (g, ph) -> Marker.remove(sid, g.index, ph) }
+        val saved = ArrayList<Pair<Segment, String>>()
+        for (sr in built.segs) {
+            val textEnd = sr.start + sr.text.length
+            val a = maxOf(range.first, sr.start)
+            val b = minOf(range.last + 1, textEnd)
+            if (b > a) {
+                var s0 = a - sr.start
+                var e0 = b - sr.start
+                // 1文字だけで、同じ字がほかにもあると全部に付いてしまうので、隣の字まで含める
+                if (e0 - s0 == 1 && sr.text.count { it == sr.text[s0] } > 1) {
+                    if (e0 < sr.text.length) e0++ else if (s0 > 0) s0--
                 }
+                val ph = sr.text.substring(s0, e0).trim()
+                if (ph.isNotEmpty()) {
+                    Marker.add(sid, sr.seg.index, ph)
+                    saved.add(sr.seg to ph)
+                }
+            }
+        }
+        selSaved = saved
+    }
+
+    fun removeSelected() {
+        val sid = currentSessionId ?: return
+        selSaved.forEach { (g, ph) -> Marker.remove(sid, g.index, ph) }
+        selSaved = emptyList()
+        selRange = null
+    }
+
+    val handleR = with(density) { 8.dp.toPx() }
+    val hitR = with(density) { 28.dp.toPx() }
+
+    fun handlePoints(l: TextLayoutResult, r: IntRange): Pair<androidx.compose.ui.geometry.Offset, androidx.compose.ui.geometry.Offset> {
+        val n = built.text.length
+        val a = l.getBoundingBox(r.first.coerceIn(0, n - 1))
+        val b = l.getBoundingBox(r.last.coerceIn(0, n - 1))
+        return androidx.compose.ui.geometry.Offset(a.left, a.bottom) to androidx.compose.ui.geometry.Offset(b.right, b.bottom)
+    }
+
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth()) {
+            Text(
+                built.text,
+                style = MaterialTheme.typography.bodyLarge,
+                onTextLayout = { layout = it },
+                modifier = Modifier.weight(1f)
+                    .drawWithContent {
+                        val l = layout
+                        val r = selRange
+                        if (l != null && r != null && !r.isEmpty()) {
+                            drawPath(l.getPathForRange(r.first, r.last + 1), SELECT_COLOR)
+                        }
+                        drawContent()
+                        if (l != null && r != null && !r.isEmpty()) {
+                            val (p1, p2) = handlePoints(l, r)
+                            drawLine(cs.primary, p1.copy(y = p1.y - handleR * 2), p1, strokeWidth = 2.dp.toPx())
+                            drawLine(cs.primary, p2.copy(y = p2.y - handleR * 2), p2, strokeWidth = 2.dp.toPx())
+                            drawCircle(cs.primary, handleR, p1.copy(y = p1.y + handleR * 0.6f))
+                            drawCircle(cs.primary, handleR, p2.copy(y = p2.y + handleR * 0.6f))
+                        }
+                    }
+                    .pointerInput(built) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            val l = layout ?: return@awaitEachGesture
+                            val startPos = down.position
+                            val startOff = l.getOffsetForPosition(startPos)
+                            // ● をつまんだか
+                            var handle = -1
+                            selRange?.let { r ->
+                                val (p1, p2) = handlePoints(l, r)
+                                if ((startPos - p1).getDistance() < hitR) handle = 0
+                                else if ((startPos - p2).getDistance() < hitR) handle = 1
+                            }
+                            if (handle >= 0) down.consume()
+                            var swiping = false
+                            var anchor: IntRange? = null
+                            var dx = 0f
+                            var dy = 0f
+                            var moved = false
+                            while (true) {
+                                val ev = awaitPointerEvent()
+                                val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!ch.pressed) break
+                                val d = ch.positionChange()
+                                dx += d.x
+                                dy += d.y
+                                if (handle < 0 && !swiping) {
+                                    if (kotlin.math.abs(dx) > viewConfiguration.touchSlop && kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.3f) {
+                                        swiping = true
+                                        anchor = wordRange(built.text.text, startOff)
+                                        selSaved = emptyList()
+                                        selRange = anchor
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    } else if (kotlin.math.abs(dy) > viewConfiguration.touchSlop) {
+                                        return@awaitEachGesture // 縦はスクロールに任せる
+                                    }
+                                }
+                                if (kotlin.math.abs(dx) > viewConfiguration.touchSlop || kotlin.math.abs(dy) > viewConfiguration.touchSlop) moved = true
+                                val off = l.getOffsetForPosition(ch.position).coerceIn(0, built.text.length)
+                                if (swiping) {
+                                    ch.consume()
+                                    val an = anchor ?: continue
+                                    // なぞった単語まで広げる
+                                    val w = wordRange(built.text.text, off.coerceAtMost(built.text.length - 1))
+                                    selRange = if (off >= an.first) an.first..maxOf(an.last, w.last) else w.first..an.last
+                                } else if (handle >= 0) {
+                                    ch.consume()
+                                    val r = selRange ?: continue
+                                    // ● は1文字ずつ動かせる
+                                    selRange = if (handle == 0) off.coerceAtMost(r.last)..r.last else r.first..(off - 1).coerceAtLeast(r.first)
+                                }
+                            }
+                            when {
+                                swiping || handle >= 0 -> selRange?.let { commit(it) }
+                                !moved -> {
+                                    // タップ
+                                    val url = built.urls.firstOrNull { startOff in it.first until it.second }
+                                    val hl = built.hls.firstOrNull { startOff in it.start until it.end }
+                                    when {
+                                        selRange != null && hl == null -> { selRange = null; selSaved = emptyList() }
+                                        url != null -> uri.openUri(url.third)
+                                        hl != null -> {
+                                            // マーカーを選ぶ（同じ語句の範囲をまとめる）
+                                            selRange = hl.start until hl.end
+                                            selSaved = listOf(hl.seg to hl.phrase)
+                                        }
+                                        else -> segAt(startOff)?.let { r ->
+                                            // 押した文字の位置 → 区間の文の中の位置（カーソルをそこに置く）
+                                            val full = displayText(r.seg) ?: ""
+                                            val base = full.indexOf(r.text).coerceAtLeast(0)
+                                            val inPiece = (startOff - r.start).coerceIn(0, r.text.length)
+                                            onEdit(r.seg, (base + inPiece).coerceIn(0, full.length))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+            )
+            // 右の余白：分の打刻を、その分が始まる行の高さに（スクロールバーのすぐ左）
+            Box(Modifier.width(GUTTER), contentAlignment = Alignment.TopEnd) {
+                val l = layout
+                if (l != null) {
+                    for ((off, label) in built.stamps) {
+                        val line = l.getLineForOffset(off.coerceIn(0, (built.text.length - 1).coerceAtLeast(0)))
+                        val top = with(density) { l.getLineTop(line).toDp() }
+                        Text(
+                            label,
+                            fontSize = 10.sp,
+                            color = cs.outline.copy(alpha = 0.7f),
+                            modifier = Modifier.offset(y = top + 4.dp),
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+        }
+        // マーカーを選んでいるときの小さな操作
+        selRange?.let { r ->
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(end = GUTTER)) {
+                Text(
+                    "🖍 両端の●で長さを調整",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.outline,
+                    modifier = Modifier.weight(1f),
+                )
+                SmallBtn("消す") { removeSelected() }
+                SmallBtn("完了", primary = true) { selRange = null; selSaved = emptyList() }
             }
         }
     }
 }
+
+private class Built(
+    val text: androidx.compose.ui.text.AnnotatedString,
+    val segs: List<SegRange>,
+    val urls: List<Triple<Int, Int, String>>,
+    val hls: List<HlRange>,
+    val stamps: List<Pair<Int, String>>,
+)
+
+/** いま開いている記録（マーカーの保存先） */
+private var currentSessionId: String? = null
+
+private val SELECT_COLOR = androidx.compose.ui.graphics.Color(0x66FFB300)
 
 /** 文章の中でそのまま直す入力欄 */
 @Composable
