@@ -55,9 +55,10 @@ class RecorderService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
+                // startForegroundService のあとは必ず前面に出す（すでに録音中でも。出さないと Android がアプリを止める）
+                startInForeground()
                 val id = intent.getStringExtra(EXTRA_ID)
                 if (id == null || running) return START_NOT_STICKY
-                startInForeground()
                 begin(id)
             }
             ACTION_STOP -> finish()
@@ -101,6 +102,8 @@ class RecorderService : Service() {
         thread?.join(5000)
         thread = null
         stopLocal()
+        // 録音が途中で終わったとき（マイクが使えないなど）も、録音中のままにしない
+        Live.state.value.sessionId?.let { sid -> Repo.update(sid) { it.copy(recording = false) } }
         Live.state.value = Live.State()
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
@@ -154,6 +157,13 @@ class RecorderService : Service() {
         Live.state.update { it.copy(partial = "") }
     }
 
+    /** マイクが使えなかったとき：録音中の表示のまま止まらないよう、録音を終える */
+    private fun failMic(msg: String) {
+        running = false
+        Processor.status.value = msg
+        android.os.Handler(mainLooper).post { finish() }
+    }
+
     // ---------- 録音 ----------
 
     @SuppressLint("MissingPermission")
@@ -165,12 +175,12 @@ class RecorderService : Service() {
                 AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuf, SAMPLE_RATE * 2),
             )
         } catch (e: Exception) {
-            Live.state.update { it.copy(error = "マイクを使えません: ${e.message}") }
+            failMic("マイクを使えません: ${e.message}")
             return
         }
         if (rec.state != AudioRecord.STATE_INITIALIZED) {
-            Live.state.update { it.copy(error = "マイクを使えません（権限を確認してください）") }
             rec.release()
+            failMic("マイクを使えません（マイクの権限を確認してください）")
             return
         }
         rec.startRecording()
@@ -215,7 +225,7 @@ class RecorderService : Service() {
                 frames++
                 rmsSum += rms
                 if (settings.voiceChangeHints) voice.feed(buf, n, rms, startMs + (samples - n) * 1000L / SAMPLE_RATE)
-                if (rms > 250) loudFrames++
+                if (rms > 120) loudFrames++
                 Live.level.value = (rms / 4000.0).coerceIn(0.0, 1.0).toFloat()
                 val quiet = rms < maxOf(150.0, rmsSum / frames * 0.35)
                 if (quiet) quietRun++ else {

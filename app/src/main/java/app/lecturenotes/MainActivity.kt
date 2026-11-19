@@ -452,8 +452,9 @@ fun DetailScreen(id: String, openInfo: Boolean, onBack: () -> Unit, onSettings: 
     }
 
     var menu by remember { mutableStateOf(false) }
-    /** 直している区間と、最初のカーソルの位置 */
-    var editing by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    /** 直している区間と、入力中の文（画面の段落が並び替わっても消えないよう、ここで持つ） */
+    var editState by remember { mutableStateOf<EditState?>(null) }
+    val editing = editState?.let { it.segIndex to 0 }
     /** 直している欄のカーソルの高さ（画面の中の位置） */
     var editCursorY by remember { mutableStateOf<Float?>(null) }
     var listTop by remember { mutableStateOf(0f) }
@@ -465,6 +466,16 @@ fun DetailScreen(id: String, openInfo: Boolean, onBack: () -> Unit, onSettings: 
 
     var learned by remember { mutableStateOf<Pair<Int, List<Corrections.Fix>>?>(null) }
     val rows = remember(s) { Transcript.paragraphs(s) }
+    // 段落ごとの変わらない名前（上の段落が増えても、下の段落の状態がずれないように）
+    val rowKeys = remember(rows) {
+        val seen = HashMap<Int, Int>()
+        rows.map { p ->
+            val first = p.pieces.firstOrNull { it.seg != null }?.seg?.index ?: -1
+            val n = seen.getOrDefault(first, 0)
+            seen[first] = n + 1
+            "p$first.$n"
+        }
+    }
 
     val listState = rememberLazyListState()
     val atBottom by remember {
@@ -561,22 +572,23 @@ fun DetailScreen(id: String, openInfo: Boolean, onBack: () -> Unit, onSettings: 
             },
             state = listState,
         ) {
-            items(rows) { para ->
+            items(rows.size, key = { rowKeys[it] }) { i ->
+                val para = rows[i]
                 ParaView(
                     para, editing?.first,
-                    onEdit = { g, cursor -> editCursorY = null; editing = g.index to cursor },
+                    onEdit = { g, cursor -> editCursorY = null; editState = EditState(g.index, displayText(g) ?: "", cursor) },
                     onMark = { Marker.toggleWhole(id, it.index) },
                 ) { g ->
                     InlineEditor(
-                        s, g, editing?.second ?: 0,
+                        s, g, editState ?: EditState(g.index, displayText(g) ?: "", 0),
                         onCursorY = { editCursorY = it },
-                        onClose = { editing = null },
+                        onClose = { editState = null },
                         onLearned = { fixes -> learned = g.index to fixes },
                     )
                 }
             }
             if (isRec) {
-                item { LiveBlock(live, now) }
+                item(key = "live") { LiveBlock(live, now) }
             }
             if (rows.isEmpty() && !isRec) {
                 item { Text("まだ録音がありません", color = MaterialTheme.colorScheme.outline, modifier = Modifier.padding(16.dp)) }
@@ -800,7 +812,19 @@ private fun Scrollbar(state: androidx.compose.foundation.lazy.LazyListState, mod
     }
 }
 
-private val MARKER_COLOR = androidx.compose.ui.graphics.Color(0x80FFE14D)
+/** マーカーの色（g 緑・y 黄・r 赤）。文字が読めるよう半透明 */
+private fun markerColor(c: Char) = when (c) {
+    'y' -> androidx.compose.ui.graphics.Color(0x80FFE14D)
+    'r' -> androidx.compose.ui.graphics.Color(0x66FF6B6B)
+    else -> androidx.compose.ui.graphics.Color(0x7066E08A)
+}
+
+/** 色を選ぶ丸 */
+private fun markerDot(c: Char) = when (c) {
+    'y' -> androidx.compose.ui.graphics.Color(0xFFFFD43B)
+    'r' -> androidx.compose.ui.graphics.Color(0xFFFF6B6B)
+    else -> androidx.compose.ui.graphics.Color(0xFF40C057)
+}
 
 /** 1つの段落。押したところの区間をその場で直せる。長押しでマーカー。聖句の参照を押すと wol.jw.org を開く */
 @Composable
@@ -838,7 +862,7 @@ private fun ParaView(
 private data class SegRange(val start: Int, val end: Int, val seg: Segment, val text: String)
 
 /** すでにあるマーカーの位置（文字の範囲・区間・語句） */
-private data class HlRange(val start: Int, val end: Int, val seg: Segment, val phrase: String)
+private data class HlRange(val start: Int, val end: Int, val seg: Segment, val entry: String)
 
 /** 日本語の単語の切れ目 */
 private fun wordRange(text: String, off: Int): IntRange {
@@ -887,23 +911,24 @@ private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment, Int) ->
                 }
                 withStyle(style) { append(if (p.kind == Transcript.Kind.MARK) " ${p.text} " else p.text) }
                 p.seg?.let { g ->
-                    val bg = SpanStyle(background = MARKER_COLOR)
-                    if (Marker.WHOLE in g.highlights) {
-                        addStyle(bg, start, start + p.text.length)
-                        hlRanges.add(HlRange(start, start + p.text.length, g, Marker.WHOLE))
-                    }
                     val full = displayText(g) ?: ""
-                    for (h in g.highlights) {
-                        if (h == Marker.WHOLE) continue
+                    for (e in g.highlights) {
+                        val (c, h) = Marker.parse(e)
+                        val bg = SpanStyle(background = markerColor(c))
+                        if (h == Marker.WHOLE) {
+                            addStyle(bg, start, start + p.text.length)
+                            hlRanges.add(HlRange(start, start + p.text.length, g, e))
+                            continue
+                        }
                         for (r in Marker.find(p.text, h)) {
                             addStyle(bg, start + r.first, start + r.last + 1)
-                            hlRanges.add(HlRange(start + r.first, start + r.last + 1, g, h))
+                            hlRanges.add(HlRange(start + r.first, start + r.last + 1, g, e))
                         }
                         // AI が書き換えて見つからなくなった語句は、区間の最後に残す
                         if (Marker.find(full, h).isEmpty() && full.trimEnd().endsWith(p.text.trimEnd())) {
                             val ns = length
                             withStyle(bg) { append(" 🖍$h") }
-                            hlRanges.add(HlRange(ns, length, g, h))
+                            hlRanges.add(HlRange(ns, length, g, e))
                         }
                     }
                 }
@@ -923,6 +948,9 @@ private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment, Int) ->
     // マーカーを引いている・選んでいるところ（文字の範囲）と、保存してある語句（区間の番号・語句）
     var selRange by remember { mutableStateOf<IntRange?>(null) }
     var selSaved by remember { mutableStateOf<List<Pair<Segment, String>>>(emptyList()) }
+    val st = remember { Settings(context) }
+    /** いま選んでいるマーカーの色（新しく引くときはペンの色） */
+    var selColor by remember { mutableStateOf(st.markerColor.firstOrNull() ?: 'g') }
 
     fun segAt(off: Int): SegRange? =
         built.segs.firstOrNull { off in it.start until it.end } ?: built.segs.lastOrNull { it.start <= off }
@@ -945,8 +973,7 @@ private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment, Int) ->
                 }
                 val ph = sr.text.substring(s0, e0).trim()
                 if (ph.isNotEmpty()) {
-                    Marker.add(sid, sr.seg.index, ph)
-                    saved.add(sr.seg to ph)
+                    Marker.add(sid, sr.seg.index, ph, selColor)?.let { saved.add(sr.seg to it) }
                 }
             }
         }
@@ -981,7 +1008,7 @@ private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment, Int) ->
                         val l = layout
                         val r = selRange
                         if (l != null && r != null && !r.isEmpty()) {
-                            drawPath(l.getPathForRange(r.first, r.last + 1), SELECT_COLOR)
+                            drawPath(l.getPathForRange(r.first, r.last + 1), markerColor(selColor))
                         }
                         drawContent()
                         if (l != null && r != null && !r.isEmpty()) {
@@ -1023,6 +1050,7 @@ private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment, Int) ->
                                         swiping = true
                                         anchor = wordRange(built.text.text, startOff)
                                         selSaved = emptyList()
+                                        selColor = st.markerColor.firstOrNull() ?: 'g'
                                         selRange = anchor
                                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                     } else if (kotlin.math.abs(dy) > viewConfiguration.touchSlop) {
@@ -1056,7 +1084,8 @@ private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment, Int) ->
                                         hl != null -> {
                                             // マーカーを選ぶ（同じ語句の範囲をまとめる）
                                             selRange = hl.start until hl.end
-                                            selSaved = listOf(hl.seg to hl.phrase)
+                                            selSaved = listOf(hl.seg to hl.entry)
+                                            selColor = Marker.parse(hl.entry).first
                                         }
                                         else -> segAt(startOff)?.let { r ->
                                             // 押した文字の位置 → 区間の文の中の位置（カーソルをそこに置く）
@@ -1092,7 +1121,20 @@ private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment, Int) ->
         // マーカーを選んでいるときの小さな操作
         selRange?.let { r ->
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(end = GUTTER)) {
-                Text("🖍 ◀ ▶", style = MaterialTheme.typography.labelMedium, color = cs.outline, modifier = Modifier.weight(1f))
+                // 色：押すとこのマーカーの色が変わり、次から引く色にもなる
+                Marker.COLORS.forEach { c ->
+                    ColorDot(c, selected = c == selColor) {
+                        selColor = c
+                        st.markerColor = c.toString()
+                        val sid = currentSessionId
+                        if (sid != null) {
+                            selSaved = selSaved.mapNotNull { (g, e) ->
+                                Marker.add(sid, g.index, Marker.parse(e).second, c)?.let { g to it }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.weight(1f))
                 IconBtn(Icons.Default.Delete, "マーカーを消す", tint = cs.error) { removeSelected() }
                 Spacer(Modifier.width(4.dp))
                 OkBtn(desc = "マーカーを確定") { selRange = null; selSaved = emptyList() }
@@ -1112,20 +1154,18 @@ private class Built(
 /** いま開いている記録（マーカーの保存先） */
 private var currentSessionId: String? = null
 
-private val SELECT_COLOR = androidx.compose.ui.graphics.Color(0x66FFB300)
 
 /** 文章の中でそのまま直す入力欄 */
 @Composable
 private fun InlineEditor(
-    s: Session, g: Segment, cursor: Int,
+    s: Session, g: Segment, state: EditState,
     onCursorY: (Float) -> Unit,
     onClose: () -> Unit, onLearned: (List<Corrections.Fix>) -> Unit,
 ) {
+    val context = LocalContext.current
     val cs = MaterialTheme.colorScheme
-    val before = remember(g.index) { displayText(g) ?: "" }
-    var field by remember(g.index) {
-        mutableStateOf(TextFieldValue(before, androidx.compose.ui.text.TextRange(cursor.coerceIn(0, before.length))))
-    }
+    val before = state.before
+    var field by state::field
     var textLayout by remember { mutableStateOf<TextLayoutResult?>(null) }
     var fieldTop by remember { mutableStateOf<Float?>(null) }
     LaunchedEffect(field.selection, textLayout, fieldTop) {
@@ -1196,7 +1236,7 @@ private fun InlineEditor(
                 }
             }
             EmojiBtn("🖍", "選んだ文字にマーカー", enabled = !sel.collapsed) {
-                Marker.add(s.id, g.index, field.text.substring(sel.min, sel.max))
+                Marker.add(s.id, g.index, field.text.substring(sel.min, sel.max), Settings(context).markerColor.firstOrNull() ?: 'g')
                 field = field.copy(selection = androidx.compose.ui.text.TextRange(sel.max))
             }
             Spacer(Modifier.weight(1f))
@@ -1204,10 +1244,14 @@ private fun InlineEditor(
             Spacer(Modifier.width(4.dp))
             OkBtn { save() }
         }
-        g.highlights.filter { it != Marker.WHOLE }.forEach { h ->
+        g.highlights.filter { Marker.parse(it).second != Marker.WHOLE }.forEach { e ->
+            val (c, h) = Marker.parse(e)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("🖍 $h", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                IconBtn(Icons.Default.Close, "このマーカーを消す") { Marker.remove(s.id, g.index, h) }
+                Text(
+                    buildAnnotatedString { withStyle(SpanStyle(background = markerColor(c))) { append(h) } },
+                    style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f),
+                )
+                IconBtn(Icons.Default.Close, "このマーカーを消す") { Marker.remove(s.id, g.index, e) }
             }
         }
         if (showRaw) {
@@ -1231,19 +1275,39 @@ private fun SmallBtn(label: String, enabled: Boolean = true, primary: Boolean = 
 }
 
 /** 入力欄の中のマーカー表示。文字の位置は変えず、色だけ付ける */
+/** 直している最中の状態 */
+class EditState(val segIndex: Int, val before: String, cursor: Int) {
+    var field by mutableStateOf(TextFieldValue(before, androidx.compose.ui.text.TextRange(cursor.coerceIn(0, before.length))))
+}
+
 private class MarkerTransformation(private val highlights: List<String>) : androidx.compose.ui.text.input.VisualTransformation {
     override fun filter(text: androidx.compose.ui.text.AnnotatedString): androidx.compose.ui.text.input.TransformedText {
         val t = text.text
         val out = buildAnnotatedString {
             append(text)
-            val bg = SpanStyle(background = MARKER_COLOR)
-            if (Marker.WHOLE in highlights) addStyle(bg, 0, t.length)
-            for (h in highlights) {
-                if (h == Marker.WHOLE) continue
-                for (r in Marker.find(t, h)) addStyle(bg, r.first, r.last + 1)
+            for (e in highlights) {
+                val (c, h) = Marker.parse(e)
+                val bg = SpanStyle(background = markerColor(c))
+                if (h == Marker.WHOLE) addStyle(bg, 0, t.length)
+                else for (r in Marker.find(t, h)) addStyle(bg, r.first, r.last + 1)
             }
         }
         return androidx.compose.ui.text.input.TransformedText(out, androidx.compose.ui.text.input.OffsetMapping.Identity)
+    }
+}
+
+/** マーカーの色の丸 */
+@Composable
+private fun ColorDot(c: Char, selected: Boolean, onClick: () -> Unit) {
+    val name = when (c) { 'y' -> "黄"; 'r' -> "赤"; else -> "緑" }
+    Box(
+        Modifier.size(40.dp).clickable(onClick = onClick).semantics { contentDescription = "マーカーの色：$name" },
+        contentAlignment = Alignment.Center,
+    ) {
+        androidx.compose.foundation.Canvas(Modifier.size(if (selected) 26.dp else 20.dp)) {
+            drawCircle(markerDot(c))
+            if (selected) drawCircle(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.6f), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx()))
+        }
     }
 }
 

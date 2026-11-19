@@ -74,6 +74,9 @@ class Settings(context: Context) {
     /** 端末内の音声認識で、その場で文字を出す（クラウドの結果が来たら置き換える） */
     var livePreview by bool("livePreview", true)
 
+    /** マーカーのいまの色（g 緑・y 黄・r 赤） */
+    var markerColor by str("markerColor", "g")
+
     /** 声の変わり目を見つけて、段落を区切る参考にする */
     var voiceChangeHints by bool("voiceChangeHints", true)
 }

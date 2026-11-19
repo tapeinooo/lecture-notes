@@ -41,9 +41,10 @@ object Export {
                     Transcript.Kind.TIME -> ""
                     else -> {
                         val g = pc.seg
-                        if (g == null || g.highlights.isEmpty()) pc.text
-                        else if (Marker.WHOLE in g.highlights) "**${pc.text}**"
-                        else g.highlights.fold(pc.text) { acc, h -> if (acc.contains(h)) acc.replaceFirst(h, "**$h**") else acc }
+                        val ph = g?.let { Marker.phrases(it.highlights) } ?: emptyList()
+                        if (ph.isEmpty()) pc.text
+                        else if (Marker.WHOLE in ph) "**${pc.text}**"
+                        else ph.fold(pc.text) { acc, h -> if (acc.contains(h)) acc.replaceFirst(h, "**$h**") else acc }
                     }
                 }
             }.trim()
@@ -52,8 +53,12 @@ object Export {
         }
         // マーカーの一覧
         val marked = s.segments.flatMap { g ->
-            g.highlights.map { h -> fmtClock(g.startMs) to (if (h == Marker.WHOLE) (displayText(g) ?: "").trim() else h) }
-        }.filter { it.second.isNotEmpty() }
+            g.highlights.map { e ->
+                val (c, h) = Marker.parse(e)
+                val dot = when (c) { 'r' -> "🔴"; 'y' -> "🟡"; else -> "🟢" }
+                fmtClock(g.startMs) to "$dot " + (if (h == Marker.WHOLE) (displayText(g) ?: "").trim() else h)
+            }
+        }.filter { it.second.length > 2 }
         if (marked.isNotEmpty()) {
             append("---\n\n## マーカーを引いたところ\n\n")
             marked.forEach { (t, h) -> append("- `$t` $h\n") }
@@ -83,7 +88,8 @@ object Export {
         val send = Intent(Intent.ACTION_SEND)
             .setType("text/markdown")
             .putExtra(Intent.EXTRA_SUBJECT, s.title)
-            .putExtra(Intent.EXTRA_TEXT, text)
+            // 長い記録の文を Intent にそのまま入れると大きすぎて落ちるので、短いときだけ本文も付ける（いつもファイルは付ける）
+            .apply { if (text.length < 50_000) putExtra(Intent.EXTRA_TEXT, text) }
             .putExtra(Intent.EXTRA_STREAM, uri)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         context.startActivity(Intent.createChooser(send, "書き出す").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
