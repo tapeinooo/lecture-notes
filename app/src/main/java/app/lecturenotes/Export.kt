@@ -62,7 +62,7 @@ object Export {
         // 聖句の参照の一覧
         val refs = s.segments.flatMap { g ->
             val t = displayText(g) ?: ""
-            Scripture.find(t).map { r -> t.substring(r.start, r.end) to Scripture.url(r.book, r.chapter) }
+            Scripture.find(t).map { r -> t.substring(r.start, r.end) to Scripture.webUrl(r) }
         }.distinctBy { it.first }
         if (refs.isNotEmpty()) {
             append("---\n\n## 出てきた聖句\n\n")

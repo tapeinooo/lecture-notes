@@ -48,12 +48,17 @@ object Scripture {
         put("第一ヨハネ", 62); put("第二ヨハネ", 63); put("第三ヨハネ", 64)
     }
 
+    /** 「ヨハネ 3:16」「マタイ24章14節」「テモテ第二 3:1-5」「ヨハネ3章16節から18節」 */
     private val pattern: Regex by lazy {
         val names = aliases.keys.sortedByDescending { it.length }.joinToString("|") { Regex.escape(it) }
-        Regex("($names)\\s*(?:の)?\\s*(\\d{1,3})\\s*(?:章\\s*|[:：]\\s*)(\\d{1,3})(?:\\s*節)?")
+        Regex(
+            "($names)\\s*(?:の)?\\s*(\\d{1,3})\\s*(?:章\\s*|[:：]\\s*)(\\d{1,3})(?:\\s*節)?" +
+                "(?:\\s*(?:[-‐－–〜~～]|から)\\s*(\\d{1,3})(?:\\s*節)?)?",
+        )
     }
 
-    data class Ref(val start: Int, val end: Int, val book: Int, val chapter: Int, val verse: Int)
+    /** endVerse は「1-5」の 5（なければ null） */
+    data class Ref(val start: Int, val end: Int, val book: Int, val chapter: Int, val verse: Int, val endVerse: Int? = null)
 
     /** 全角数字を半角に（長さは変えない） */
     private fun normalizeDigits(s: String) = buildString(s.length) {
@@ -64,11 +69,40 @@ object Scripture {
         val t = normalizeDigits(text)
         return pattern.findAll(t).mapNotNull { m ->
             val book = aliases[m.groupValues[1]] ?: return@mapNotNull null
-            Ref(m.range.first, m.range.last + 1, book, m.groupValues[2].toInt(), m.groupValues[3].toInt())
+            val v = m.groupValues[3].toInt()
+            val ev = m.groupValues[4].toIntOrNull()?.takeIf { it > v }
+            Ref(m.range.first, m.range.last + 1, book, m.groupValues[2].toInt(), v, ev)
         }.toList()
     }
 
+    /** JW Library の聖句の番号（書・章・節を 2・3・3 桁で。例 ヨハネ 3:16 → 43003016）。範囲は「-」でつなぐ */
+    private fun bibleParam(r: Ref): String {
+        fun code(v: Int) = "%02d%03d%03d".format(r.book, r.chapter, v)
+        return if (r.endVerse != null) "${code(r.verse)}-${code(r.endVerse)}" else code(r.verse)
+    }
+
+    /** JW Library アプリで開く（日本語・新世界訳） */
+    fun jwLibraryUri(r: Ref) = "jwlibrary:///finder?wtlocale=J&pub=nwtsty&bible=${bibleParam(r)}"
+
+    /** JW Library がないとき・書き出しの文章用（jw.org の「探す」リンク。JW Library があればそちらで開く端末もある） */
+    fun webUrl(r: Ref) = "https://www.jw.org/finder?wtlocale=J&prefer=lang&pub=nwtsty&bible=${bibleParam(r)}"
+
+    /** 章のページ（前からの形。残しておく） */
     fun url(book: Int, chapter: Int) = "https://wol.jw.org/ja/wol/b/r7/lp-j/nwtsty/$book/$chapter"
+
+    /** 聖句を開く：JW Library → だめなら jw.org */
+    fun open(context: android.content.Context, r: Ref) {
+        val app = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(jwLibraryUri(r)))
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            context.startActivity(app)
+        } catch (e: android.content.ActivityNotFoundException) {
+            context.startActivity(
+                android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(webUrl(r)))
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }
+    }
 
     fun annotate(text: String, linkColor: Color): AnnotatedString = buildAnnotatedString {
         var pos = 0
@@ -76,7 +110,7 @@ object Scripture {
         for (r in find(text)) {
             if (r.start < pos) continue
             append(text.substring(pos, r.start))
-            pushLink(LinkAnnotation.Url(url(r.book, r.chapter), style))
+            pushLink(LinkAnnotation.Url(webUrl(r), style))
             append(text.substring(r.start, r.end))
             pop()
             pos = r.end

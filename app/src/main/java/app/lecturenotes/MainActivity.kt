@@ -861,13 +861,14 @@ private fun wordRange(text: String, off: Int): IntRange {
  */
 @Composable
 private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment, Int) -> Unit, @Suppress("UNUSED_PARAMETER") onMark: (Segment) -> Unit) {
+    val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val uri = LocalUriHandler.current
     val cs = MaterialTheme.colorScheme
     val density = LocalDensity.current
     val built = remember(pieces, cs) {
         val segRanges = ArrayList<SegRange>()
-        val urlRanges = ArrayList<Triple<Int, Int, String>>()
+        val urlRanges = ArrayList<Triple<Int, Int, Scripture.Ref>>()
         val hlRanges = ArrayList<HlRange>()
         val stamps = ArrayList<Pair<Int, String>>() // 文字の位置と、分の打刻
         val text = buildAnnotatedString {
@@ -909,7 +910,7 @@ private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment, Int) ->
                 if (p.kind != Transcript.Kind.MARK) {
                     for (r in Scripture.find(p.text)) {
                         addStyle(SpanStyle(color = cs.primary, textDecoration = TextDecoration.Underline), start + r.start, start + r.end)
-                        urlRanges.add(Triple(start + r.start, start + r.end, Scripture.url(r.book, r.chapter)))
+                        urlRanges.add(Triple(start + r.start, start + r.end, r))
                     }
                 }
                 p.seg?.let { segRanges.add(SegRange(start, length, it, p.text)) }
@@ -1051,7 +1052,7 @@ private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment, Int) ->
                                     val hl = built.hls.firstOrNull { startOff in it.start until it.end }
                                     when {
                                         selRange != null && hl == null -> { selRange = null; selSaved = emptyList() }
-                                        url != null -> uri.openUri(url.third)
+                                        url != null -> Scripture.open(context, url.third)
                                         hl != null -> {
                                             // マーカーを選ぶ（同じ語句の範囲をまとめる）
                                             selRange = hl.start until hl.end
@@ -1103,7 +1104,7 @@ private fun PiecesText(pieces: List<Transcript.Piece>, onEdit: (Segment, Int) ->
 private class Built(
     val text: androidx.compose.ui.text.AnnotatedString,
     val segs: List<SegRange>,
-    val urls: List<Triple<Int, Int, String>>,
+    val urls: List<Triple<Int, Int, Scripture.Ref>>,
     val hls: List<HlRange>,
     val stamps: List<Pair<Int, String>>,
 )
