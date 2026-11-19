@@ -234,7 +234,9 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
     var confirmDelete by remember { mutableStateOf<String?>(null) }
     var homeQuery by remember { mutableStateOf("") }
     /** 開いている日（最初は今日だけ開く） */
-    var openDays by remember { mutableStateOf(setOf(fmtDay(System.currentTimeMillis()))) }
+    // 開いている日は覚えておく（初めてのときは今日だけ開く）
+    val homeSt = remember { Settings(context) }
+    var openDays by remember { mutableStateOf(homeSt.openDays ?: setOf(fmtDay(System.currentTimeMillis()))) }
     val shown = sessions.filter { s ->
         (filter == null || filter in s.labels) && (homeQuery.isBlank() || matchesSession(s, homeQuery))
     }
@@ -258,7 +260,6 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
                 enabled = live.sessionId == null,
                 modifier = Modifier.fillMaxWidth().height(56.dp),
             ) { Text("● 新しく録音する", style = MaterialTheme.typography.titleMedium) }
-            TextButton(onClick = onPlan) { Text("📅 予定から枠を作る（大会のプログラムなど）") }
             // 探す（タイトル・話し手・ラベル・文章）
             OutlinedTextField(
                 value = homeQuery, onValueChange = { homeQuery = it },
@@ -267,6 +268,7 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
                 trailingIcon = { if (homeQuery.isNotEmpty()) IconBtn(Icons.Default.Close, "消す") { homeQuery = "" } },
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             )
+            TextButton(onClick = onPlan) { Text("📅 予定から枠を作る（大会のプログラムなど）") }
             // ラベルで絞り込む
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(vertical = 4.dp)) {
                 FilterChip(selected = filter == null, onClick = { filter = null }, label = { Text("すべて") })
@@ -283,6 +285,7 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
                 item(key = "day-$day") {
                     DayHeader(day, list.size, open, recording = list.any { it.id == live.sessionId }) {
                         openDays = if (day in openDays) openDays - day else openDays + day
+                        homeSt.openDays = openDays
                     }
                 }
                 // 日の中は時刻の早い順（日の並びは新しい日が上のまま）
@@ -1619,7 +1622,8 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
 
     Column(Modifier.fillMaxSize()) {
         Header("設定", onBack)
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
+        val scroll = rememberScrollState()
+        Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(horizontal = 16.dp)) {
             Section("文字起こしの方法")
             Mode.entries.forEach { m ->
                 Row(
@@ -1777,6 +1781,11 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
                 scope.launch {
                     updateResult = "確かめています…"
                     updateResult = withContext(Dispatchers.IO) { Updater.check() }
+                    // 新しい版があれば、「更新する」ボタン（いちばん下）までスクロール
+                    if (Updater.available.value != null) {
+                        delay(100)
+                        scroll.animateScrollTo(scroll.maxValue)
+                    }
                 }
             }) { Text("更新を確かめる（いま ${BuildConfig.VERSION_NAME}）") }
             if (updateResult.isNotEmpty()) Text(updateResult, style = MaterialTheme.typography.bodySmall)

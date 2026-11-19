@@ -81,6 +81,13 @@ class Settings(context: Context) {
     var backupAudio by bool("backupAudio", true)
     var backupAudioWifiOnly by bool("backupAudioWifiOnly", true)
 
+    /** 一覧で開いている日（null = まだ一度も変えていない） */
+    var openDays: Set<String>?
+        get() = p.getStringSet("openDays", null)?.toSet()
+        set(v) {
+            p.edit().putStringSet("openDays", v ?: emptySet()).apply()
+        }
+
     /** マーカーのいまの色（g 緑・y 黄・r 赤） */
     var markerColor by str("markerColor", "g")
 
