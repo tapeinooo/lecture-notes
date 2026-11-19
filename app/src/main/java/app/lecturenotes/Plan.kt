@@ -41,7 +41,11 @@ import java.util.Calendar
  * 「9:40 司会者の話：…」のような時刻付きの行を読み取り、曜日の見出し（金曜日 など）で日を進める。
  */
 object Plan {
-    data class Item(val day: Int, val minutes: Int?, val title: String, val skipByDefault: Boolean)
+    /** sub = シンポジウムの小見出し（話）。parent = その親の位置 */
+    data class Item(
+        val day: Int, val minutes: Int?, val title: String, val skipByDefault: Boolean,
+        val sub: Boolean = false, val parent: Int = -1,
+    )
 
     private val TIME_ONLY = Regex("^\\s*(?:(午前|午後)\\s*)?(\\d{1,2})\\s*[:：]\\s*(\\d{2})\\s*$")
     private val TIME_LINE = Regex("^\\s*(?:(午前|午後)\\s*)?(\\d{1,2})\\s*[:：]\\s*(\\d{2})\\s*[　 ・\\-–—]*\\s*(.+)$")
@@ -104,8 +108,29 @@ object Plan {
                 val parent = lastTimed ?: out.last()
                 val theme = parent.title.substringAfter(':').substringAfter('：').trim()
                 val t = line.trimStart('•', '・', '●', '◦', '‐', '-', '–', '—', ' ', '　')
-                out.add(Item(parent.day, out.last().minutes?.plus(1), "$t（$theme）", false))
+                out.add(Item(parent.day, parent.minutes, "$t（$theme）", false, sub = true, parent = out.indexOf(parent)))
             }
+        }
+        // シンポジウム：題だけの枠は作らず、小見出しの話に、次の項目までの時間を等分して割り当てる
+        if (out.any { it.sub }) {
+            val result = ArrayList<Item>()
+            out.forEachIndexed { i, it ->
+                if (it.sub) return@forEachIndexed
+                val subs = out.filter { s -> s.sub && s.parent == i }
+                if (subs.isEmpty()) {
+                    result.add(it)
+                    return@forEachIndexed
+                }
+                val start = it.minutes
+                // 次の時刻付きの項目（同じ日）までの長さ。なければ 1 つ 15 分
+                val next = out.drop(i + 1).firstOrNull { n -> !n.sub && n.minutes != null && n.day == it.day }?.minutes
+                val total = if (start != null && next != null && next > start) next - start else 15 * subs.size
+                subs.forEachIndexed { k, sb ->
+                    result.add(sb.copy(minutes = start?.plus(total * k / subs.size)))
+                }
+            }
+            out.clear()
+            out.addAll(result)
         }
         // 時刻が1つもなければ、1行1つの枠にする
         if (out.isEmpty()) {
@@ -123,7 +148,9 @@ object Plan {
                 add(Calendar.DAY_OF_MONTH, it.day)
                 add(Calendar.MINUTE, it.minutes ?: (9 * 60 + i))
             }
-            Repo.createPlanned(it.title.take(80), cal.timeInMillis, labels)
+            // タイトルは「10:00 タイトル」
+            val title = it.minutes?.let { m -> "%d:%02d %s".format(m / 60, m % 60, it.title) } ?: it.title
+            Repo.createPlanned(title.take(90), cal.timeInMillis, labels)
             n++
         }
         return n
