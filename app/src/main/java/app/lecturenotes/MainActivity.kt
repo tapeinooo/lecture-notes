@@ -285,7 +285,8 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
                         openDays = if (day in openDays) openDays - day else openDays + day
                     }
                 }
-                if (open) list.forEach { s ->
+                // 日の中は時刻の早い順（日の並びは新しい日が上のまま）
+                if (open) list.sortedBy { it.startedAt }.forEach { s ->
                 item(key = s.id) {
                 val recording = live.sessionId == s.id
                 Card(
