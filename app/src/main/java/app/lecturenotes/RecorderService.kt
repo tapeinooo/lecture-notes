@@ -86,8 +86,32 @@ class RecorderService : Service() {
         )
     }
 
+    /** 画面がついているか */
+    @Volatile private var screenOn = true
+
+    private val screenReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            screenOn = intent?.action != Intent.ACTION_SCREEN_OFF
+            if (running) updateLocal()
+        }
+    }
+    private var screenRegistered = false
+
     private fun begin(id: String) {
         settings = Settings(this)
+        screenOn = getSystemService(PowerManager::class.java).isInteractive
+        if (!screenRegistered) {
+            ContextCompat.registerReceiver(
+                this,
+                screenReceiver,
+                android.content.IntentFilter().apply {
+                    addAction(Intent.ACTION_SCREEN_OFF)
+                    addAction(Intent.ACTION_SCREEN_ON)
+                },
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+            screenRegistered = true
+        }
         val session = Repo.update(id) { it.copy(recording = true) } ?: run { finish(); return }
         wakeLock = getSystemService(PowerManager::class.java)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "lecturenotes:rec").apply { acquire(14 * 60 * 60 * 1000L) }
@@ -113,6 +137,10 @@ class RecorderService : Service() {
     }
 
     override fun onDestroy() {
+        if (screenRegistered) {
+            runCatching { unregisterReceiver(screenReceiver) }
+            screenRegistered = false
+        }
         if (running) finish()
         super.onDestroy()
     }
@@ -120,8 +148,10 @@ class RecorderService : Service() {
     // ---------- 端末内の文字起こしの出し入れ ----------
 
     private fun updateLocal() {
-        // その場の表示のため、端末内の音声認識はできるだけ動かしておく（クラウドの結果が来たら置き換える）
-        val want = (settings.livePreview || Processor.shouldUseLocal()) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+        // その場の表示のため、画面がついている間は端末内の音声認識を動かす（クラウドの結果が来たら置き換える）。
+        // 画面を消している間は誰も見ていないので止める（電池のため）。ただし端末内しか使えないときは動かし続ける
+        val want = ((settings.livePreview && screenOn) || Processor.shouldUseLocal()) &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
         if (want && local == null) startLocal()
         if (!want && local != null) stopLocal()
         Live.state.update { st -> st.copy(

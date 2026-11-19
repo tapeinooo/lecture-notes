@@ -129,6 +129,50 @@ object Audio {
 
     fun mime(f: File) = if (f.name.endsWith(".m4a")) "audio/mp4" else "audio/wav"
 
+    /**
+     * m4a（AAC）の中身を、そのまま ADTS 形式（.aac）に並べ直す（音は作り直さない）。
+     * Gemini は m4a を受け付けないが、ADTS の AAC は受け付ける。
+     */
+    fun toAdts(f: File): ByteArray {
+        val ex = MediaExtractor()
+        try {
+            ex.setDataSource(f.path)
+            ex.selectTrack(0)
+            val fmt = ex.getTrackFormat(0)
+            require(fmt.getString(MediaFormat.KEY_MIME) == MediaFormat.MIMETYPE_AUDIO_AAC) { "AAC ではありません" }
+            val rate = fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+            val ch = fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+            val rates = intArrayOf(96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350)
+            val freqIdx = rates.indexOf(rate)
+            require(freqIdx >= 0) { "対応していない周波数" }
+            val profile = 2 // AAC LC
+            val out = ByteArrayOutputStream()
+            val buf = ByteBuffer.allocate(64 * 1024)
+            while (true) {
+                buf.clear()
+                val size = ex.readSampleData(buf, 0)
+                if (size < 0) break
+                val len = size + 7
+                out.write(0xFF)
+                out.write(0xF1)
+                out.write(((profile - 1) shl 6) or (freqIdx shl 2) or (ch shr 2))
+                out.write(((ch and 3) shl 6) or (len shr 11))
+                out.write((len shr 3) and 0xFF)
+                out.write(((len and 7) shl 5) or 0x1F)
+                out.write(0xFC)
+                val arr = ByteArray(size)
+                buf.get(arr, 0, size)
+                out.write(arr)
+                ex.advance()
+            }
+            val bytes = out.toByteArray()
+            require(bytes.size > 100) { "音声が空です" }
+            return bytes
+        } finally {
+            ex.release()
+        }
+    }
+
     /** m4a を WAV のバイト列に戻す（Gemini に送るため） */
     fun toWavBytes(f: File): ByteArray {
         if (f.name.endsWith(".wav")) return f.readBytes()

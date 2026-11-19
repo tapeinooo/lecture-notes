@@ -251,9 +251,13 @@ object Gemini {
     fun transcribe(key: String, model: String, audio: File, prompt: String, timeoutMs: Int): String {
         val parts = JSONArray()
             .put(JSONObject().put("text", prompt))
-            .put(JSONObject().put("inline_data", JSONObject()
-                .put("mime_type", "audio/wav")
-                .put("data", Base64.encodeToString(Audio.toWavBytes(audio), Base64.NO_WRAP))))
+            .put(JSONObject().put("inline_data", run {
+                // 圧縮したまま（AAC）送る。WAV の約 1/10 の通信量。だめなら WAV
+                val aac = if (audio.name.endsWith(".m4a")) runCatching { Audio.toAdts(audio) }.getOrNull() else null
+                JSONObject()
+                    .put("mime_type", if (aac != null) "audio/aac" else "audio/wav")
+                    .put("data", Base64.encodeToString(aac ?: Audio.toWavBytes(audio), Base64.NO_WRAP))
+            }))
         return generate(key, model, null, parts, json = false, fast = true, timeoutMs = timeoutMs).trim()
     }
 
