@@ -588,6 +588,10 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
         }
         if (searching) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+                // 印を消して、ふつうの表示に戻す（検索枠の左）
+                TextButton(onClick = { searching = false; query = "" }, contentPadding = PaddingValues(horizontal = 6.dp)) {
+                    Text("✕ 消す")
+                }
                 OutlinedTextField(
                     value = query, onValueChange = { query = it; hitPos = 0 },
                     placeholder = { Text("探す言葉") }, singleLine = true,
@@ -604,10 +608,6 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
                 }
                 IconBtn(Icons.Default.KeyboardArrowDown, "次へ", enabled = hits.isNotEmpty()) {
                     hitPos = (hitPos + 1) % hits.size
-                }
-                // 印を消して、ふつうの表示に戻す
-                TextButton(onClick = { searching = false; query = "" }, contentPadding = PaddingValues(horizontal = 8.dp)) {
-                    Text("✕ 消す")
                 }
             }
         }
