@@ -108,6 +108,19 @@ object Repo {
         return s
     }
 
+    /** 予定の枠（タイトルだけの空の記録）を作る。startedAt は予定の日時 */
+    @Synchronized
+    fun createPlanned(title: String, startedAt: Long, labels: List<String>): Session {
+        var id = "plan-" + SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date(startedAt))
+        var n = 1
+        while (get(id) != null || dir(id).exists()) id = "plan-" + SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date(startedAt)) + "-" + (++n)
+        val s = Session(id, title, startedAt, false, emptyList(), emptyList(), labels = labels, titleAuto = false)
+        dir(id).mkdirs()
+        save(s)
+        _sessions.value = (listOf(s) + _sessions.value).sortedByDescending { it.startedAt }
+        return s
+    }
+
     @Synchronized
     fun update(id: String, f: (Session) -> Session): Session? {
         val old = get(id) ?: return null

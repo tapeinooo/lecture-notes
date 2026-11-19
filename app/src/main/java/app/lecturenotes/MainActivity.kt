@@ -155,6 +155,8 @@ sealed interface Screen {
     /** 設定。back は戻る先（録音中の画面から開いたら、そこへ戻る） */
     data class Config(val back: Screen) : Screen
     data class GlossaryEdit(val back: Config) : Screen
+    /** 予定から枠を作る */
+    data object Plan : Screen
 }
 
 @Composable
@@ -185,7 +187,9 @@ fun AppRoot() {
             Screen.Home -> HomeScreen(
                 onOpen = { id, info, q -> screen = Screen.Detail(id, info, q) },
                 onSettings = { screen = Screen.Config(Screen.Home) },
+                onPlan = { screen = Screen.Plan },
             )
+            Screen.Plan -> PlanScreen(onBack = { screen = Screen.Home })
             is Screen.Detail -> DetailScreen(
                 s.id, s.openInfo, s.query,
                 onBack = { screen = Screen.Home },
@@ -221,7 +225,7 @@ private fun Header(
 // ---------------- 一覧 ----------------
 
 @Composable
-fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit) {
+fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit, onPlan: () -> Unit) {
     val context = LocalContext.current
     val sessions by Repo.sessions.collectAsState()
     val live by Live.state.collectAsState()
@@ -229,6 +233,8 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
     var filter by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf<String?>(null) }
     var homeQuery by remember { mutableStateOf("") }
+    /** 開いている日（最初は今日だけ開く） */
+    var openDays by remember { mutableStateOf(setOf(fmtDay(System.currentTimeMillis()))) }
     val shown = sessions.filter { s ->
         (filter == null || filter in s.labels) && (homeQuery.isBlank() || matchesSession(s, homeQuery))
     }
@@ -252,6 +258,7 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
                 enabled = live.sessionId == null,
                 modifier = Modifier.fillMaxWidth().height(56.dp),
             ) { Text("● 新しく録音する", style = MaterialTheme.typography.titleMedium) }
+            TextButton(onClick = onPlan) { Text("📅 予定から枠を作る（大会のプログラムなど）") }
             // 探す（タイトル・話し手・ラベル・文章）
             OutlinedTextField(
                 value = homeQuery, onValueChange = { homeQuery = it },
@@ -269,11 +276,16 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
             }
         }
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-            shown.forEachIndexed { i, s ->
-                val day = fmtDay(s.startedAt)
-                if (i == 0 || fmtDay(shown[i - 1].startedAt) != day) {
-                    item(key = "day-$day-$i") { DaySeparator(day) }
+            val groups = shown.groupBy { fmtDay(it.startedAt) }
+            groups.forEach { (day, list) ->
+                // 探しているとき・録音中の日は開いておく
+                val open = day in openDays || homeQuery.isNotBlank() || list.any { it.id == live.sessionId }
+                item(key = "day-$day") {
+                    DayHeader(day, list.size, open, recording = list.any { it.id == live.sessionId }) {
+                        openDays = if (day in openDays) openDays - day else openDays + day
+                    }
                 }
+                if (open) list.forEach { s ->
                 item(key = s.id) {
                 val recording = live.sessionId == s.id
                 Card(
@@ -327,6 +339,7 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
                     }
                 }
                 }
+                }
             }
             if (shown.isEmpty()) {
                 item {
@@ -341,13 +354,27 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
     }
 }
 
-/** 一覧の日付の区切り（細い線と小さな日付） */
+/** 一覧の日付の見出し。押すと開く・たたむ */
 @Composable
-private fun DaySeparator(day: String) {
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 2.dp)) {
-        Text(day, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+private fun DayHeader(day: String, count: Int, open: Boolean, recording: Boolean, onToggle: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+            .clickable(onClick = onToggle)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Text(if (open) "▾" else "▸", color = MaterialTheme.colorScheme.outline)
         Spacer(Modifier.width(8.dp))
-        HorizontalDivider(Modifier.weight(1f), color = MaterialTheme.colorScheme.outlineVariant)
+        Text(day, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+        if (recording) Text("● ", color = MaterialTheme.colorScheme.error)
+        Text(
+            "${count}件",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSecondaryContainer,
+            modifier = Modifier.background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(10.dp))
+                .padding(horizontal = 8.dp, vertical = 2.dp),
+        )
     }
 }
 
