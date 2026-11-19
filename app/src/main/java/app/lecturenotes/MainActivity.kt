@@ -904,44 +904,30 @@ private fun AiLine() {
     )
 }
 
-/** 作業中に動く、ペンで書いているような小さなアイコン */
+/**
+ * 作業中の印：3つの点が順に跳ねる。
+ * なめらかに動かさず、0.2 秒ごとに次の形へ切り替えるだけ（描き直しは1秒に5回ほど。電池にやさしい）。
+ */
 @Composable
 private fun WritingIcon() {
-    val save by Power.save.collectAsState()
-    if (save) {
-        // 省電力：なめらかに動かさず、0.6 秒ごとに少し傾けるだけ（描き直しを1秒に2回ほどに）
-        var tilt by remember { mutableStateOf(false) }
-        LaunchedEffect(Unit) {
-            while (true) {
-                delay(600)
-                tilt = !tilt
-            }
+    var frame by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(200)
+            frame = (frame + 1) % 5 // 0〜2：その点が跳ねる、3〜4：みんな休む（間を置くと「考えている」感じになる）
         }
-        Text("✍", fontSize = 16.sp, modifier = Modifier.graphicsLayer { rotationZ = if (tilt) 10f else -10f })
-        return
     }
-    val t = androidx.compose.animation.core.rememberInfiniteTransition(label = "writing")
-    val x by t.animateFloat(
-        initialValue = -3f, targetValue = 3f,
-        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
-            androidx.compose.animation.core.tween(450, easing = androidx.compose.animation.core.LinearEasing),
-            androidx.compose.animation.core.RepeatMode.Reverse,
-        ),
-        label = "x",
-    )
-    val r by t.animateFloat(
-        initialValue = -10f, targetValue = 10f,
-        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
-            androidx.compose.animation.core.tween(220, easing = androidx.compose.animation.core.FastOutSlowInEasing),
-            androidx.compose.animation.core.RepeatMode.Reverse,
-        ),
-        label = "r",
-    )
-    Text(
-        "✍",
-        fontSize = 16.sp,
-        modifier = Modifier.offset(x = x.dp).graphicsLayer { rotationZ = r },
-    )
+    val color = MaterialTheme.colorScheme.primary
+    androidx.compose.foundation.Canvas(Modifier.size(width = 26.dp, height = 16.dp)) {
+        val r = 2.6.dp.toPx()
+        val gap = 8.dp.toPx()
+        val baseY = size.height - r - 1.dp.toPx()
+        for (k in 0 until 3) {
+            val up = k == frame
+            val y = if (up) baseY - 5.dp.toPx() else baseY
+            drawCircle(color.copy(alpha = if (up) 1f else 0.45f), radius = if (up) r * 1.1f else r, center = androidx.compose.ui.geometry.Offset(r + 1.dp.toPx() + k * gap, y))
+        }
+    }
 }
 
 /** 音の大きさ。ここだけが 0.1 秒ごとに描き直される */
