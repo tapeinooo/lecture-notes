@@ -74,6 +74,13 @@ class Settings(context: Context) {
     /** 端末内の音声認識で、その場で文字を出す（クラウドの結果が来たら置き換える） */
     var livePreview by bool("livePreview", true)
 
+    /** Google ドライブへの控え（自分の Google Apps Script に送る） */
+    var backupEnabled by bool("backupEnabled", false)
+    var backupUrl by str("backupUrl", "")
+    var backupToken by str("backupToken", "")
+    var backupAudio by bool("backupAudio", true)
+    var backupAudioWifiOnly by bool("backupAudioWifiOnly", true)
+
     /** マーカーのいまの色（g 緑・y 黄・r 赤） */
     var markerColor by str("markerColor", "g")
 

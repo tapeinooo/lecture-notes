@@ -162,6 +162,7 @@ object Processor {
         }
 
         if (compressOne(sessions)) return true
+        if (Backup.step(app)) return true
 
         status.value = idleStatus(online)
         return false

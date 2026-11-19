@@ -276,6 +276,7 @@ fun HomeScreen(onOpen: (String, Boolean) -> Unit, onSettings: () -> Unit) {
                                         fmtClock(s.durationMs),
                                         s.speaker.ifBlank { null },
                                         if (recording) "● 録音中" else null,
+                                        if (Backup.upToDate(context, s)) "☁" else null,
                                     ).joinToString("・"),
                                     style = MaterialTheme.typography.bodySmall,
                                 )
@@ -1666,6 +1667,9 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
             )
             OutlinedButton(onClick = onGlossary) { Text("用語集を編集する") }
 
+            Section("Google ドライブに控え")
+            DriveBackupSettings()
+
             Section("ラベルと話し手")
             LabelSpeakerSettings()
 
@@ -1690,6 +1694,74 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
             Spacer(Modifier.height(32.dp))
         }
     }
+}
+
+@Composable
+private fun DriveBackupSettings() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val clip = androidx.compose.ui.platform.LocalClipboardManager.current
+    val uri = LocalUriHandler.current
+    val st = remember { Settings(context) }
+    var on by remember { mutableStateOf(st.backupEnabled) }
+    var url by remember { mutableStateOf(st.backupUrl) }
+    var audio by remember { mutableStateOf(st.backupAudio) }
+    var wifiOnly by remember { mutableStateOf(st.backupAudioWifiOnly) }
+    var msg by remember { mutableStateOf("") }
+    val bstatus by Backup.status.collectAsState()
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Switch(checked = on, onCheckedChange = { on = it; st.backupEnabled = it; Processor.wake() })
+        Text("自動で控えを送る", Modifier.padding(start = 8.dp))
+    }
+    Text(
+        "録音が終わるたび（録音中は10分ごと）に、文章・情報・音声をドライブの「たっぴぃず録音」フォルダに送ります。" +
+            "受け口として、自分の Google Apps Script を1回だけ用意します。",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.outline,
+    )
+    // 用意の手順（3つ）
+    Text("① スクリプトをコピー（合言葉入り）", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        OutlinedButton(onClick = {
+            clip.setText(androidx.compose.ui.text.AnnotatedString(Backup.script(context)))
+            msg = "コピーしました"
+        }) { Text("📋 コピー") }
+        Spacer(Modifier.width(8.dp))
+        OutlinedButton(onClick = { uri.openUri("https://script.google.com/home/projects/create") }) { Text("GAS を開く ↗") }
+    }
+    Text(
+        "② 新しいプロジェクトに全部貼って保存 →「デプロイ」→「新しいデプロイ」→ 種類「ウェブアプリ」、実行は「自分」、アクセスは「全員」→ デプロイして承認",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    Text("③ ウェブアプリの URL を貼る", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 6.dp))
+    OutlinedTextField(
+        value = url, onValueChange = { url = it; st.backupUrl = it.trim() },
+        placeholder = { Text("https://script.google.com/macros/s/…/exec") }, singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        OutlinedButton(onClick = {
+            scope.launch {
+                msg = "試しています…"
+                msg = withContext(Dispatchers.IO) { Backup.ping(context) }
+            }
+        }, enabled = url.isNotBlank()) { Text("つながるか試す") }
+        Spacer(Modifier.width(8.dp))
+        OutlinedButton(onClick = { Backup.forceAll(context); msg = "送り始めました" }, enabled = on && url.isNotBlank()) { Text("☁ 今すぐ控える") }
+    }
+    if (msg.isNotEmpty()) Text(msg, style = MaterialTheme.typography.bodySmall)
+    if (bstatus.isNotEmpty()) Text(bstatus, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Switch(checked = audio, onCheckedChange = { audio = it; st.backupAudio = it })
+        Text("音声も送る（1時間で約14MB）", Modifier.padding(start = 8.dp))
+    }
+    if (audio) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(checked = wifiOnly, onCheckedChange = { wifiOnly = it; st.backupAudioWifiOnly = it })
+            Text("音声は Wi-Fi のときだけ", Modifier.padding(start = 8.dp))
+        }
+    }
+    Text("合言葉：${Backup.token(context)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
 }
 
 @Composable
