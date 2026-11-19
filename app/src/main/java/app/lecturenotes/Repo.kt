@@ -60,7 +60,7 @@ data class Session(
     val shownTitle: String get() = title.ifBlank { fmtDate(startedAt) }
 }
 
-/** 文字起こしの出だし（最初の一文、長ければ 28 字まで）。端末内の仮の文字は使わない */
+/** 文字起こしの出だし（最初の一文、長ければ 20 字まで。一覧で1行に収まる長さ）。端末内の仮の文字は使わない */
 fun autoTitle(s: Session): String? {
     val text = s.segments.asSequence()
         .filter { !it.silent && it.rawEngine != "local" && it.rawEngine != "error" }
@@ -70,7 +70,7 @@ fun autoTitle(s: Session): String? {
         .replace(Regex("\\s+"), " ").trim()
     if (text.length < 4) return null
     val end = text.indexOfFirst { it == '。' || it == '？' || it == '！' || it == '?' || it == '!' }
-    val first = if (end in 4..27) text.substring(0, end + 1) else text.take(28)
+    val first = if (end in 4..19) text.substring(0, end + 1) else text.take(20)
     return first.trim().trimEnd('、', ',')
 }
 

@@ -333,7 +333,10 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
                     Column(Modifier.padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 4.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text(s.shownTitle, style = MaterialTheme.typography.titleMedium, maxLines = 2)
+                                Text(
+                                    s.shownTitle, style = MaterialTheme.typography.titleMedium, maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                )
                                 Text(
                                     listOfNotNull(
                                         fmtTime(s.startedAt),
