@@ -88,9 +88,37 @@ class Settings(context: Context) {
             p.edit().putStringSet("openDays", v ?: emptySet()).apply()
         }
 
+    /** 省電力モード：真っ黒の画面・動きを減らす */
+    var powerSave: Boolean
+        get() = p.getBoolean("powerSave", true)
+        set(v) {
+            p.edit().putBoolean("powerSave", v).apply()
+            Power.save.value = v
+        }
+
+    /** アプリの中だけ画面を暗くする */
+    var dimScreen: Boolean
+        get() = p.getBoolean("dimScreen", false)
+        set(v) {
+            p.edit().putBoolean("dimScreen", v).apply()
+            Power.dim.value = v
+        }
+
     /** マーカーのいまの色（g 緑・y 黄・r 赤） */
     var markerColor by str("markerColor", "g")
 
     /** 声の変わり目を見つけて、段落を区切る参考にする */
     var voiceChangeHints by bool("voiceChangeHints", true)
+}
+
+/** 省電力の状態（画面がすぐ反映できるように） */
+object Power {
+    val save = kotlinx.coroutines.flow.MutableStateFlow(true)
+    val dim = kotlinx.coroutines.flow.MutableStateFlow(false)
+
+    fun init(context: Context) {
+        val st = Settings(context)
+        save.value = st.powerSave
+        dim.value = st.dimScreen
+    }
 }

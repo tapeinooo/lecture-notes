@@ -86,6 +86,8 @@ class RecorderService : Service() {
         )
     }
 
+    private var lastPartialAt = 0L
+
     /** 画面がついているか */
     @Volatile private var screenOn = true
 
@@ -174,7 +176,14 @@ class RecorderService : Service() {
                 synchronized(localText) { localText.append(t).append(' ') }
                 Live.state.update { it.copy(liveText = (it.liveText + " " + t).trim(), partial = "") }
             },
-            onPartial = { t -> Live.state.update { it.copy(partial = t) } },
+            onPartial = { t ->
+                // 省電力モードでは、途中の文字の更新を 0.6 秒に 1 回までにする（画面の描き直しを減らす）
+                val now = System.currentTimeMillis()
+                if (!Power.save.value || t.isEmpty() || now - lastPartialAt >= 600) {
+                    lastPartialAt = now
+                    Live.state.update { it.copy(partial = t) }
+                }
+            },
             onError = { msg -> Live.state.update { it.copy(error = msg) } },
         )
         local = r

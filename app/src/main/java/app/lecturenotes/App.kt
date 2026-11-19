@@ -8,6 +8,7 @@ class App : Application() {
         Repo.init(this)
         Meta.init(this)
         Usage.init(this)
+        Power.init(this)
         Processor.start(this)
     }
 }

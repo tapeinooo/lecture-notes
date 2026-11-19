@@ -141,12 +141,39 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
+            val save by Power.save.collectAsState()
+            val dim by Power.dim.collectAsState()
+            // アプリの中だけ画面を暗く
+            LaunchedEffect(dim) {
+                val lp = window.attributes
+                lp.screenBrightness = if (dim) 0.15f else android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                window.attributes = lp
+            }
+            val scheme = when {
+                save -> BLACK_SCHEME
+                isSystemInDarkTheme() -> darkColorScheme()
+                else -> lightColorScheme()
+            }
+            MaterialTheme(colorScheme = scheme) {
                 Surface(Modifier.fillMaxSize()) { AppRoot() }
             }
         }
     }
 }
+
+/** 省電力モードの色：背景を真っ黒に（黒いところは電気を使わない画面が多い）、文字は少し抑えた明るさ */
+private val BLACK_SCHEME = darkColorScheme(
+    background = androidx.compose.ui.graphics.Color.Black,
+    surface = androidx.compose.ui.graphics.Color.Black,
+    surfaceVariant = androidx.compose.ui.graphics.Color(0xFF161616),
+    onSurface = androidx.compose.ui.graphics.Color(0xFFC8C8C8),
+    onBackground = androidx.compose.ui.graphics.Color(0xFFC8C8C8),
+    onSurfaceVariant = androidx.compose.ui.graphics.Color(0xFFA0A0A0),
+    outline = androidx.compose.ui.graphics.Color(0xFF7A7A7A),
+    outlineVariant = androidx.compose.ui.graphics.Color(0xFF2A2A2A),
+    secondaryContainer = androidx.compose.ui.graphics.Color(0xFF1E1A2A),
+    tertiaryContainer = androidx.compose.ui.graphics.Color(0xFF1F1A12),
+)
 
 sealed interface Screen {
     data object Home : Screen
@@ -880,6 +907,19 @@ private fun AiLine() {
 /** 作業中に動く、ペンで書いているような小さなアイコン */
 @Composable
 private fun WritingIcon() {
+    val save by Power.save.collectAsState()
+    if (save) {
+        // 省電力：なめらかに動かさず、0.6 秒ごとに少し傾けるだけ（描き直しを1秒に2回ほどに）
+        var tilt by remember { mutableStateOf(false) }
+        LaunchedEffect(Unit) {
+            while (true) {
+                delay(600)
+                tilt = !tilt
+            }
+        }
+        Text("✍", fontSize = 16.sp, modifier = Modifier.graphicsLayer { rotationZ = if (tilt) 10f else -10f })
+        return
+    }
     val t = androidx.compose.animation.core.rememberInfiniteTransition(label = "writing")
     val x by t.animateFloat(
         initialValue = -3f, targetValue = 3f,
@@ -907,8 +947,21 @@ private fun WritingIcon() {
 /** 音の大きさ。ここだけが 0.1 秒ごとに描き直される */
 @Composable
 private fun LevelBar(modifier: Modifier) {
-    val level by Live.level.collectAsState()
-    LinearProgressIndicator(progress = { level }, modifier = modifier)
+    val save by Power.save.collectAsState()
+    if (save) {
+        // 省電力：0.5 秒ごとに見る
+        var level by remember { mutableStateOf(0f) }
+        LaunchedEffect(Unit) {
+            while (true) {
+                level = Live.level.value
+                delay(500)
+            }
+        }
+        LinearProgressIndicator(progress = { level }, modifier = modifier)
+    } else {
+        val level by Live.level.collectAsState()
+        LinearProgressIndicator(progress = { level }, modifier = modifier)
+    }
 }
 
 /** 録音中の、まだ区切られていない部分（端末内の仮の文字を、文章の続きとして薄く出す） */
@@ -1766,6 +1819,18 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
 
             Section("ラベルと話し手")
             LabelSpeakerSettings()
+
+            Section("電池")
+            var saveOn by remember { mutableStateOf(st.powerSave) }
+            var dimOn by remember { mutableStateOf(st.dimScreen) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = saveOn, onCheckedChange = { saveOn = it; st.powerSave = it })
+                Text("省電力モード（真っ黒の画面・動きを減らす）", Modifier.padding(start = 8.dp))
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = dimOn, onCheckedChange = { dimOn = it; st.dimScreen = it })
+                Text("アプリの中だけ画面を暗くする", Modifier.padding(start = 8.dp))
+            }
 
             Section("その他")
             OutlinedButton(onClick = {
