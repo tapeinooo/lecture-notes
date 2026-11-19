@@ -274,6 +274,7 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
 
     Column(Modifier.fillMaxSize()) {
         Header("たっぴぃず録音", null) {
+            EmojiBtn("🎤", "音のテスト") { onSoundTest() }
             IconBtn(Icons.Default.SettingsIcon, "設定") { onSettings() }
         }
         NoticeBar()
@@ -300,10 +301,7 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
                 trailingIcon = { if (homeQuery.isNotEmpty()) IconBtn(Icons.Default.Close, "消す") { homeQuery = "" } },
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             )
-            Row {
-                TextButton(onClick = onPlan) { Text("📅 予定から枠を作る") }
-                TextButton(onClick = onSoundTest) { Text("🎤 音のテスト") }
-            }
+            TextButton(onClick = onPlan) { Text("📅 予定から枠を作る（大会のプログラムなど）") }
             // ラベルで絞り込む
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(vertical = 4.dp)) {
                 FilterChip(selected = filter == null, onClick = { filter = null }, label = { Text("すべて") })
