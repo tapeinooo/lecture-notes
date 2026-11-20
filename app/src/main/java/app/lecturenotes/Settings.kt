@@ -69,7 +69,7 @@ class Settings(context: Context) {
     var polishEnabled by bool("polishEnabled", true)
 
     /** 仕上げを何区間ずつまとめるか */
-    var polishBatch by int("polishBatch", 8)
+    var polishBatch by int("polishBatch2", 30)
 
     /** 端末内の音声認識で、その場で文字を出す（クラウドの結果が来たら置き換える） */
     var livePreview by bool("livePreview", true)

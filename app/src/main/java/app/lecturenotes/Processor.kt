@@ -479,20 +479,27 @@ object Processor {
             return false
         }
         for (s in Repo.sessions.value.sortedByDescending { it.recording }) {
-            val batch = polishBatchOf(s) ?: continue
-            val glossary = Glossary.load(app)
-            val firstIdx = s.segments.indexOfFirst { it.index == batch.first().index }
-            val context = s.segments.take(firstIdx.coerceAtLeast(0))
-                .mapNotNull { displayText(it) }.joinToString("").takeLast(800)
-            val system = Prompts.formatSystem(glossary, compact = false)
-            val user = Prompts.formatUser(context, batch.map { it.raw ?: "" }, Marker.keep(batch), s, voiceHints(s, batch))
+            val full = polishBatchOf(s) ?: continue
             val cands = usable(Role.POLISH)
             if (cands.isEmpty()) {
-                polishStatus.value = "仕上げ：使えるモデルが休み中"
+                // 止まっている理由と、再開の目安
+                val all = Catalog.candidates(app, st, Role.POLISH)
+                val wait = all.minOfOrNull { maxOf(Cooldown.remainingMs(it.key), Cooldown.remainingMs("${it.key}#POLISH")) } ?: 0L
+                val at = java.text.SimpleDateFormat("HH:mm", java.util.Locale.JAPAN).format(java.util.Date(System.currentTimeMillis() + wait))
+                polishStatus.value = if (all.isEmpty()) "仕上げ：使えるモデルがありません（キーを確かめてください）"
+                else "仕上げ：無料枠の上限などで休み中（$at ごろ再開）"
                 return false
             }
+            val glossary = Glossary.load(app)
             for (c in cands) {
-                polishStatus.value = "${c.model} で仕上げ中（${fmtClock(batch.first().startMs)}〜）"
+                // Groq は1分あたりの量が少ないので、小さく分けて（8区間・用語集は短く）送る
+                val batch = if (c.provider == "groq") full.take(8) else full
+                val firstIdx = s.segments.indexOfFirst { it.index == batch.first().index }
+                val context = s.segments.take(firstIdx.coerceAtLeast(0))
+                    .mapNotNull { displayText(it) }.joinToString("").takeLast(if (c.provider == "groq") 300 else 800)
+                val system = Prompts.formatSystem(glossary, compact = c.provider == "groq")
+                val user = Prompts.formatUser(context, batch.map { it.raw ?: "" }, Marker.keep(batch), s, voiceHints(s, batch))
+                polishStatus.value = "${c.model} で仕上げ中（${fmtClock(batch.first().startMs)}〜、${batch.size}区間）"
                 polishActivity.value = "仕上げ中（${c.model}）"
                 try {
                     val out = timed(c, Role.POLISH) { to ->
@@ -509,7 +516,7 @@ object Processor {
                 } catch (e: RateLimited) {
                     Cooldown.set(c.key, e.waitMs, "${c.model}: ${e.message?.take(120)}")
                 } catch (e: Exception) {
-                    if (e is HttpError && e.code in listOf(400, 401, 403, 404)) {
+                    if (e is HttpError && e.code in listOf(400, 401, 403, 404, 413)) {
                         Cooldown.set(c.key, 30 * 60_000L, "${c.model}: ${e.message?.take(120)}")
                         continue
                     }
@@ -529,6 +536,7 @@ object Processor {
         polishStatus.value = ""
         return false
     }
+
 
     private fun parseSegments(text: String): List<String>? {
         val start = text.indexOf('{')

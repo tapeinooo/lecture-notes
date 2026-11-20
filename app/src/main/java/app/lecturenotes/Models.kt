@@ -199,8 +199,13 @@ gemini:gemini-2.5-flash
                 val flash = gm.filter { c -> gem.first { it.name == c.model }.tier == Tier.FLASH }.take(3)
                 lite + gq + flash + gemma
             }
+            // 仕上げ：頭の良い Gemini から。Gemini が今日の上限に達しても止まらないよう、Groq の大きなモデルを後ろに
             Role.POLISH -> gem.filter { polishScore(it) > 0 }.sortedByDescending { polishScore(it) }.take(5)
-                .map { Cand("gemini", it.name) }
+                .map { Cand("gemini", it.name) } +
+                groq.filter { id -> GROQ_EXCLUDE.none { id.contains(it) } }
+                    .filter { id -> listOf("kimi-k2", "gpt-oss-120b").any { id.contains(it) } }
+                    .sortedBy { id -> GROQ_CHAT_PREF.indexOfFirst { id.contains(it) }.let { if (it < 0) 99 else it } }
+                    .take(2).map { Cand("groq", it) }
         }
     }
 
@@ -220,7 +225,7 @@ gemini:gemini-2.5-flash
                 else -> false
             }
         }.filter { c ->
-            if (role == Role.POLISH) c.provider == "gemini" || !st.autoModels else true
+            true
         }.filter { c ->
             if (role != Role.STT) true else when (st.mode) {
                 Mode.AUTO -> true
