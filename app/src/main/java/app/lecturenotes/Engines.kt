@@ -146,12 +146,12 @@ object Groq {
         return JSONObject(resp).optString("text").trim()
     }
 
-    fun chat(key: String, model: String, system: String, user: String, fast: Boolean, timeoutMs: Int): String {
+    fun chat(key: String, model: String, system: String, user: String, fast: Boolean, timeoutMs: Int, json: Boolean = true): String {
         val body = JSONObject().apply {
             put("model", model)
             if (fast && model.contains("gpt-oss")) put("reasoning_effort", "low")
             put("temperature", 0.2)
-            put("response_format", JSONObject().put("type", "json_object"))
+            if (json) put("response_format", JSONObject().put("type", "json_object"))
             put("messages", JSONArray().apply {
                 put(JSONObject().put("role", "system").put("content", system))
                 put(JSONObject().put("role", "user").put("content", user))

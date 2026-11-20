@@ -445,7 +445,7 @@ object Processor {
     private suspend fun polishLoop() {
         while (true) {
             val worked = try {
-                polishStep()
+                polishStep() || summaryStep()
             } catch (e: Exception) {
                 polishStatus.value = "仕上げ: ${e.message?.take(120)}"
                 false
@@ -455,6 +455,65 @@ object Processor {
                 withTimeoutOrNull(30_000) { polishWakeCh.receive() }
             }
         }
+    }
+
+    /**
+     * 完了した話で、清書・整形・仕上げがすべて済んだら、頭の良い AI に要約を作らせる（仕上げと同じ順番のモデル）。
+     */
+    private fun summaryStep(): Boolean {
+        val st = settings
+        if (!Net.online(app)) return false
+        val s = Repo.sessions.value.firstOrNull { s ->
+            s.completed && s.summary == null && !s.recording && s.segments.isNotEmpty() &&
+                pendingCounts(s).let { it.stt == 0 && it.fast == 0 && it.polish == 0 } &&
+                (failures["sum:${s.id}"] ?: 0) < 3
+        } ?: return false
+        val style = Summary.Style.of(st.summaryStyle)
+        val system = Summary.system(style)
+        val user = Summary.input(s)
+        if (user.length < 30) {
+            Repo.update(s.id) { it.copy(summary = "（要約するほどの文がありません）", summaryModel = "") }
+            return true
+        }
+        // Groq は1分あたりの量が少ないので、短い話だけ
+        val cands = usable(Role.POLISH).filter { it.provider != "groq" || user.length < 6000 }
+        if (cands.isEmpty()) {
+            polishStatus.value = "要約：使えるモデルが休み中"
+            return false
+        }
+        for (c in cands) {
+            polishStatus.value = "${c.model} で要約中（${s.shownTitle}）"
+            polishActivity.value = "要約中（${c.model}）"
+            try {
+                val out = timed(c, Role.POLISH) { to ->
+                    when (c.provider) {
+                        "groq" -> Groq.chat(st.groqKey, c.model, system, user, fast = false, timeoutMs = to, json = false)
+                        else -> Gemini.generate(
+                            st.geminiKey, c.model, system,
+                            org.json.JSONArray().put(org.json.JSONObject().put("text", user)), json = false, timeoutMs = to,
+                        )
+                    }
+                }
+                Usage.add(c.key)
+                used(Role.POLISH, c)
+                val text = Scripture.normalizeRefs(fixNewlines(out).replace(Regex("^```[a-z]*\\s*|```\\s*$"), "").trim())
+                if (text.length < 10) throw IllegalStateException("要約が空でした")
+                Repo.update(s.id) { if (it.summary == null) it.copy(summary = text, summaryModel = c.model) else it }
+                polishStatus.value = ""
+                return true
+            } catch (e: RateLimited) {
+                Cooldown.set(c.key, e.waitMs, "${c.model}: ${e.message?.take(120)}")
+            } catch (e: Exception) {
+                if (e is HttpError && e.code in listOf(400, 401, 403, 404, 413)) {
+                    Cooldown.set(c.key, 30 * 60_000L, "${c.model}: ${e.message?.take(120)}")
+                    continue
+                }
+                failures["sum:${s.id}"] = (failures["sum:${s.id}"] ?: 0) + 1
+                polishStatus.value = "${c.model} 要約: ${e.message?.take(100)}"
+                return false
+            }
+        }
+        return false
     }
 
     private fun polishBatchOf(s: Session): List<Segment>? {

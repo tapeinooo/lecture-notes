@@ -665,6 +665,11 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
                         Repo.update(id) { ss -> ss.copy(segments = ss.segments.map { it.copy(formatted = null, polished = false) }) }
                         Processor.wake()
                     }
+                    MenuItem("📝", "要約を作り直す", enabled = s.completed) {
+                        menu = false
+                        Repo.update(id) { it.copy(summary = null, summaryModel = null) }
+                        Processor.wake()
+                    }
                     MenuItem("🔁", "文字起こしから") {
                         menu = false
                         Repo.update(id) { ss ->
@@ -751,6 +756,9 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
             },
             state = listState,
         ) {
+            if (s.completed || s.summary != null) {
+                item(key = "summary") { SummaryCard(s) }
+            }
             items(rows.size, key = { rowKeys[it] }) { i ->
                 val para = rows[i]
                 ParaView(
@@ -894,6 +902,56 @@ private fun NoticeBar() {
     }
 }
 
+/** 要約の枠（全文の前）。完了して仕上げが済んだら AI が作る */
+@Composable
+private fun SummaryCard(s: Session) {
+    val context = LocalContext.current
+    val cs = MaterialTheme.colorScheme
+    Column(
+        Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp, end = GUTTER)
+            .background(cs.secondaryContainer.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
+            .padding(12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("📝 要約", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            s.summaryModel?.takeIf { it.isNotBlank() }?.let {
+                Text(it, style = MaterialTheme.typography.labelSmall, fontSize = 10.sp, color = cs.outline)
+            }
+        }
+        val sum = s.summary
+        if (sum == null) {
+            val p = Processor.pendingCounts(s)
+            Text(
+                if (p.stt + p.fast + p.polish > 0) "仕上げが終わったら要約を作ります（残り ${p.stt + p.fast + p.polish}）" else "要約を作っています…",
+                style = MaterialTheme.typography.bodySmall, color = cs.outline,
+            )
+            return
+        }
+        // 【見出し】は太字、聖句は JW Library で開くリンク
+        val annotated = remember(sum, cs) {
+            buildAnnotatedString {
+                sum.lines().forEachIndexed { li, line ->
+                    if (li > 0) append("\n")
+                    val start = length
+                    val m = Regex("^【([^】]+)】").find(line)
+                    if (m != null) {
+                        withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = cs.primary)) { append(m.value) }
+                        append(line.substring(m.range.last + 1))
+                    } else append(line)
+                    for (r in Scripture.find(line)) {
+                        addLink(
+                            androidx.compose.ui.text.LinkAnnotation.Clickable("ref") { Scripture.open(context, r) },
+                            start + r.start, start + r.end,
+                        )
+                        addStyle(SpanStyle(color = cs.primary, textDecoration = TextDecoration.Underline), start + r.start, start + r.end)
+                    }
+                }
+            }
+        }
+        Text(annotated, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
+    }
+}
+
 /** 画面の上の録音の操作。停止は押し間違えないよう、2回押して止める */
 @Composable
 private fun RecordControls(s: Session, isRec: Boolean, otherRec: Boolean, live: Live.State, now: Long, onMark: () -> Unit) {
@@ -944,15 +1002,33 @@ private fun RecordControls(s: Session, isRec: Boolean, otherRec: Boolean, live: 
                         .background(MaterialTheme.colorScheme.error, RoundedCornerShape(6.dp)).padding(6.dp),
                 )
             }
+        } else if (s.completed) {
+            // 完了した話：録音ボタンは出さない（取り消せる）
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Text("✓ 完了した話です", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
+                TextButton(onClick = { Repo.update(s.id) { it.copy(completed = false) } }) { Text("完了を取り消す") }
+            }
         } else {
-            Button(
-                onClick = { RecorderService.start(context, s.id) },
-                // ほかの記録を録音中なら、それを止めてから始める
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                RecDot(size = 12.dp)
-                Spacer(Modifier.width(8.dp))
-                Text(if (s.segments.isEmpty()) "録音を始める" else "続きを録音する")
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { RecorderService.start(context, s.id) },
+                    // ほかの記録を録音中なら、それを止めてから始める
+                    modifier = Modifier.weight(2f),
+                ) {
+                    RecDot(size = 12.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (s.segments.isEmpty()) "録音を始める" else "続きを録音する")
+                }
+                // 完了：この話にもう録音を足さない。仕上げが済んだら要約を作る
+                if (s.segments.isNotEmpty()) {
+                    OutlinedButton(
+                        onClick = {
+                            Repo.update(s.id) { it.copy(completed = true) }
+                            Processor.wake()
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("✓ 完了") }
+                }
             }
             if (otherRec) Text("いま録音中の記録は止めて、こちらで録音を始めます", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
         }
@@ -1989,6 +2065,23 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.outline,
             )
+
+            Section("要約の形")
+            Text("話を「✓ 完了」にすると、仕上げのあとに頭の良い AI がこの形で要約を作ります。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+            var sumStyle by remember { mutableStateOf(st.summaryStyle) }
+            Summary.Style.entries.forEach { sty ->
+                Row(
+                    Modifier.fillMaxWidth().selectable(selected = sumStyle == sty.key, onClick = { sumStyle = sty.key; st.summaryStyle = sty.key })
+                        .padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    RadioButton(selected = sumStyle == sty.key, onClick = null)
+                    Column(Modifier.padding(start = 8.dp)) {
+                        Text(sty.label)
+                        Text(sty.help, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                    }
+                }
+            }
 
             Section("電池")
             var saveOn by remember { mutableStateOf(st.powerSave) }

@@ -13,7 +13,7 @@ import androidx.compose.ui.text.style.TextDecoration
  * JW Library で開くリンクにし、「コリント第一9:10」の形にそろえる。
  * 本文は取りに行かない（jw.org の利用規約で、サイトから自動でデータを取り出すことは禁じられているため）。
  *
- * * 書名の見つけ方（覚える書名は wol.jw.org の言い方だけ）：
+ * * 書名の見つけ方（書き直すときは wol.jw.org の言い方。聞き取りは前の言い方なども広く読む）：
  *  1. 「◯章◯節」「◯:◯」の直前の語を書名とみなす（いろいろな言い方を登録してある）
  *  2. 登録にない言い方でも、聞き間違いで少し違う程度なら近い書名に当てはめる（ひらがなも読む）
  *  3. 用語集の「誤→正」で、正しい側が書名のものは、書名の言い換えとして覚える
@@ -33,8 +33,53 @@ object Scripture {
         "ヨハネ第三", "ユダ", "啓示",
     )
 
-    /** 覚える書名は wol.jw.org の言い方だけ（聞き間違いは、近い書名に当てはめて拾う） */
-    private val builtIn: Map<String, Int> = books.mapIndexed { i, b -> b to i + 1 }.toMap()
+    /** 書き直すときの書名は wol.jw.org の言い方（books）。聞き取りは、前の言い方やほかの言い方も広く読む */
+    private val builtIn: Map<String, Int> = buildMap {
+        books.forEachIndexed { i, b -> put(b, i + 1) }
+        // 前の言い方（「記」「書」の付く書名）
+        val older = listOf(
+            "ヨシュア記" to 6, "ルツ記" to 8, "サムエル記第一" to 9, "サムエル記第二" to 10, "列王記第一" to 11, "列王記第二" to 12,
+            "歴代誌第一" to 13, "歴代誌第二" to 14, "エズラ記" to 15, "ネヘミヤ記" to 16, "エステル記" to 17, "ヨブ記" to 18,
+            "イザヤ書" to 23, "エレミヤ書" to 24, "エゼキエル書" to 26, "ダニエル書" to 27, "ホセア書" to 28, "ヨエル書" to 29,
+            "アモス書" to 30, "オバデヤ書" to 31, "ヨナ書" to 32, "ミカ書" to 33, "ナホム書" to 34, "ハバクク書" to 35,
+            "ゼパニヤ書" to 36, "ハガイ書" to 37, "ゼカリヤ書" to 38, "マラキ書" to 39,
+            "創世" to 1, "出エジプト" to 2, "レビ" to 3, "民数" to 4, "申命" to 5,
+        )
+        older.forEach { (n, b) -> put(n, b) }
+        // 第一・第二…の付く書（「コリント人への第一の手紙」「第1コリント」「コリント1」など）
+        val ordinal = listOf(
+            "サムエル" to 9, "サムエル記" to 9, "列王" to 11, "列王記" to 11, "歴代" to 13, "歴代誌" to 13,
+            "コリント" to 46, "テサロニケ" to 52, "テモテ" to 54, "ペテロ" to 60, "ヨハネ" to 62,
+        )
+        for ((n, first) in ordinal) {
+            val count = if (n == "ヨハネ") 3 else 2
+            for (k in 0 until count) {
+                val b = first + k
+                for (o in listOf(listOf("一", "二", "三")[k], (k + 1).toString())) {
+                    put("${n}第$o", b); put("第$o$n", b); put("$n$o", b)
+                    put("${n}の第$o", b); put("${n}第${o}の手紙", b); put("${n}の第${o}の手紙", b)
+                    put("${n}人への第${o}の手紙", b); put("${n}人への第$o", b); put("${n}人への手紙第$o", b)
+                    put("${n}への第${o}の手紙", b); put("第$o${n}人への手紙", b)
+                }
+            }
+        }
+        // 手紙
+        listOf(
+            "ローマ" to 45, "ガラテア" to 48, "エフェソス" to 49, "エペソ" to 49, "フィリピ" to 50, "ピリピ" to 50,
+            "コロサイ" to 51, "ヘブライ" to 58, "ヘブル" to 58,
+        ).forEach { (n, b) -> put(n, b); put("${n}人への手紙", b); put("${n}人への", b); put("${n}の手紙", b) }
+        listOf("テトス" to 56, "フィレモン" to 57).forEach { (n, b) -> put("${n}への手紙", b); put("${n}の手紙", b) }
+        listOf("ヤコブ" to 59, "ユダ" to 65).forEach { (n, b) -> put("${n}の手紙", b); put("${n}書", b) }
+        // 福音書
+        listOf("マタイ" to 40, "マルコ" to 41, "ルカ" to 42, "ヨハネ" to 43).forEach { (n, b) ->
+            put("${n}による福音書", b); put("${n}の福音書", b); put("${n}福音書", b); put("${n}による", b)
+        }
+        // そのほか
+        put("裁き人の書", 7); put("士師記", 7); put("士師", 7)
+        put("詩篇", 19); put("格言の書", 20); put("箴言", 20); put("伝道者の書", 21); put("伝道", 21); put("雅歌", 22)
+        put("使徒行伝", 44); put("使徒の活動", 44); put("使徒たちの活動", 44)
+        put("黙示録", 66); put("ヨハネの黙示録", 66); put("ヨハネへの啓示", 66); put("啓示の書", 66)
+    }
 
     /** 用語集から覚えた言い方 → 書の番号 */
     @Volatile private var user: Map<String, Int> = emptyMap()

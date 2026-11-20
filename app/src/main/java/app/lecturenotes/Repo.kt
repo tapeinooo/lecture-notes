@@ -51,6 +51,11 @@ data class Session(
     val labels: List<String> = emptyList(),
     /** タイトルを文字起こしの出だしから自動で付けるか（自分で入れたら false） */
     val titleAuto: Boolean = false,
+    /** 完了（この話にもう録音を足さない）。完了して仕上げが済んだら要約を作る */
+    val completed: Boolean = false,
+    /** 要約（頭の良い AI が作る）と、作ったモデル・形 */
+    val summary: String? = null,
+    val summaryModel: String? = null,
     /** 声が変わったらしい時刻（記録の中のミリ秒）。段落を区切る参考 */
     val voiceChanges: List<Long> = emptyList(),
 ) {
@@ -170,6 +175,9 @@ object Repo {
         put("durationMs", s.durationMs)
         put("speaker", s.speaker)
         put("titleAuto", s.titleAuto)
+        put("completed", s.completed)
+        s.summary?.let { put("summary", it) }
+        s.summaryModel?.let { put("summaryModel", it) }
         put("labels", JSONArray(s.labels))
         put("voiceChanges", JSONArray(s.voiceChanges))
         put("recording", s.recording)
@@ -235,6 +243,9 @@ object Repo {
             corrections = j.optJSONArray("corrections")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList(),
             speaker = j.optString("speaker"),
             titleAuto = j.optBoolean("titleAuto"),
+            completed = j.optBoolean("completed"),
+            summary = if (j.has("summary")) j.getString("summary") else null,
+            summaryModel = if (j.has("summaryModel")) j.getString("summaryModel") else null,
             labels = j.optJSONArray("labels")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList(),
             voiceChanges = j.optJSONArray("voiceChanges")?.let { a -> (0 until a.length()).map { a.getLong(it) } } ?: emptyList(),
         )

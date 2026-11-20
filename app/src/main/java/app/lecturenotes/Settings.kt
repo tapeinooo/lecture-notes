@@ -116,6 +116,9 @@ class Settings(context: Context) {
     /** 無音がこの分数続いたら自動で録音を止める（0 = 止めない） */
     var autoStopMinutes by int("autoStopMinutes", 20)
 
+    /** 要約の形（Summary.Style.key） */
+    var summaryStyle by str("summaryStyle", "points")
+
     /** マーカーのいまの色（g 緑・y 黄・r 赤） */
     var markerColor by str("markerColor", "g")
 

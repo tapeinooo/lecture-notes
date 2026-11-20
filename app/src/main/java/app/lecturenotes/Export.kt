@@ -38,6 +38,11 @@ object Export {
         if (s.speaker.isNotBlank()) append("- 話し手：${s.speaker}\n")
         if (s.labels.isNotEmpty()) append("- ラベル：${s.labels.joinToString("、")}\n")
         append("\n")
+        s.summary?.let { sum ->
+            append("## 要約\n\n")
+            sum.lines().forEach { line -> append(line).append("  \n") }
+            append("\n## 全文\n\n")
+        }
         for (p in Transcript.paragraphs(s)) {
             val body = p.pieces.joinToString("") { pc ->
                 when (pc.kind) {
