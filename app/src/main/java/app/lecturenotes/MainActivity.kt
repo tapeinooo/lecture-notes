@@ -1923,11 +1923,11 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
     var testResult by remember { mutableStateOf("") }
     var updateResult by remember { mutableStateOf("") }
 
-    // タブ：0 よく使う ／ 1 録音と整形（試して調整） ／ 2 AI モデル ／ 3 最初の設定（一度決めたら変えない）
+    // タブ：0 よく使う ／ 1 AI モデル ／ 2 録音と整形（試して調整） ／ 3 最初の設定（一度決めたら変えない）
     var tab by remember { mutableStateOf(st.settingsTab) }
     Column(Modifier.fillMaxSize()) {
         Header("設定", onBack)
-        val tabs = listOf("よく使う", "録音・整形", "AI モデル", "最初の設定")
+        val tabs = listOf("よく使う", "AI モデル", "録音・整形", "最初の設定")
         TabRow(selectedTabIndex = tab) {
             tabs.forEachIndexed { i, t ->
                 Tab(
@@ -1942,6 +1942,20 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
         Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(horizontal = 16.dp)) {
             when (tab) {
                 0 -> {
+                // 更新（よく使うので、いちばん上）
+                Section("更新")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(onClick = {
+                        scope.launch {
+                            updateResult = "確かめています…"
+                            updateResult = withContext(Dispatchers.IO) { Updater.check() }
+                        }
+                    }) { Text("更新を確かめる") }
+                    Spacer(Modifier.width(8.dp))
+                    Text("いま ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                }
+                if (updateResult.isNotEmpty()) Text(updateResult, style = MaterialTheme.typography.bodySmall)
+                UpdateBanner()
                 Section("文字起こしの方法")
                 Mode.entries.forEach { m ->
                     Row(
@@ -2009,7 +2023,7 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
                     Text("アプリの中だけ画面を暗くする", Modifier.padding(start = 8.dp))
                 }
                 }
-                1 -> {
+                2 -> {
                 Section("録音")
                 Text("マイクの取り方（「🎤 音のテスト」で比べて自動で選べます）", style = MaterialTheme.typography.bodySmall)
                 var mic by remember { mutableStateOf(st.micSource) }
@@ -2082,7 +2096,7 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
                 OutlinedButton(onClick = { testResult = LocalRecognizer.prepareModel(context) }) { Text("端末内の日本語モデルを準備") }
                     if (testResult.isNotEmpty()) Text(testResult, style = MaterialTheme.typography.bodySmall)
                 }
-                2 -> {
+                1 -> {
                 Section("モデル")
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Switch(checked = autoModels, onCheckedChange = { autoModels = it; st.autoModels = it; Processor.wake() })
@@ -2183,20 +2197,6 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.outline,
                 )
-                Spacer(Modifier.height(8.dp))
-                OutlinedButton(onClick = {
-                    scope.launch {
-                        updateResult = "確かめています…"
-                        updateResult = withContext(Dispatchers.IO) { Updater.check() }
-                        // 新しい版があれば、「更新する」ボタン（いちばん下）までスクロール
-                        if (Updater.available.value != null) {
-                            delay(100)
-                            scroll.animateScrollTo(scroll.maxValue)
-                        }
-                    }
-                }) { Text("更新を確かめる（いま ${BuildConfig.VERSION_NAME}）") }
-                if (updateResult.isNotEmpty()) Text(updateResult, style = MaterialTheme.typography.bodySmall)
-                UpdateBanner()
                 }
             }
             Spacer(Modifier.height(32.dp))
