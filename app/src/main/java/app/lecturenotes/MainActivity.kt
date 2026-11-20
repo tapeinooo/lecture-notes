@@ -1006,7 +1006,8 @@ private fun LevelBar(modifier: Modifier) {
 /** 録音中の、まだ区切られていない部分（端末内の仮の文字を、文章の続きとして薄く出す） */
 @Composable
 private fun LiveBlock(live: Live.State, @Suppress("UNUSED_PARAMETER") now: Long) {
-    val text = (live.liveText + " " + live.partial).trim()
+    // 途中の文字のうち、すでに確定した文と重なる部分は出さない
+    val text = (live.liveText + " " + Dedupe.newPart(live.liveText, live.partial)).trim()
     Text(
         buildAnnotatedString {
             withStyle(SpanStyle(color = MaterialTheme.colorScheme.error, fontSize = 10.sp)) { append("● ") }

@@ -115,6 +115,9 @@ class RecorderService : Service() {
 
     private var lastPartialAt = 0L
 
+    /** 最近確定した端末内の文（重複を見分けるため。区切りをまたいで残す） */
+    private var recentFinals = ""
+
     /** 画面がついているか */
     @Volatile private var screenOn = true
 
@@ -207,8 +210,16 @@ class RecorderService : Service() {
         val r = LocalRecognizer(
             this,
             onFinal = { t ->
-                synchronized(localText) { localText.append(t).append(' ') }
-                Live.state.update { it.copy(liveText = (it.liveText + " " + t).trim(), partial = "") }
+                // 重複を取り除く（最近確定した文と比べて、まだない部分だけ足す。区切りをまたいでも比べる）
+                val add = synchronized(localText) {
+                    val part = Dedupe.newPart(recentFinals, t)
+                    if (part.isNotEmpty()) {
+                        localText.append(part).append(' ')
+                        recentFinals = (recentFinals + " " + part).takeLast(400)
+                    }
+                    part
+                }
+                Live.state.update { if (add.isEmpty()) it.copy(partial = "") else it.copy(liveText = (it.liveText + " " + add).trim(), partial = "") }
             },
             onPartial = { t ->
                 // 省電力モードでは、途中の文字の更新を 0.6 秒に 1 回までにする（画面の描き直しを減らす）
