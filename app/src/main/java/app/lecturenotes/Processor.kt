@@ -414,7 +414,8 @@ object Processor {
         if (list.size != batch.size) throw IllegalStateException("整形の結果の区間の数が合いません（${list.size}/${batch.size}）")
         var rejected = 0
         batch.forEachIndexed { i, g ->
-            val out = list[i].trimEnd().trimStart(' ', '\u3000')
+            // 「\n」という文字で返ってきた改行を、本当の改行に直す
+            val out = fixNewlines(list[i]).trimEnd().trimStart(' ', '\u3000')
             val ok = Guard.keepsContent(g.raw ?: "", out)
             if (!ok) rejected++
             Repo.updateSegment(s.id, g.index) {
@@ -613,10 +614,10 @@ ${previousText(s, seg, 200).let { if (it.isEmpty()) "" else "直前に話され�
 4. 句読点を整え、読みやすくしてください。
 5. 音声認識の誤りと思われる語は、文脈と用語集から正しい語に直してください。
 6. 用語・人名・書名・言い回しは、wol.jw.org（新世界訳聖書 2019年改訂版、ものみの塔出版物）の表記に合わせてください。
-7. 聖句の参照は「ヨハネ 3:16」「テモテ第二 3:1-5」の形にそろえてください（書名は新世界訳の書名）。
+7. 聖句の参照は「ヨハネ 3:16」「テモテ第二 3:1-5」の形にそろえてください（書名は新世界訳の書名）。「十章の五節」のような漢数字も「10:5」の形にします。節が複数のときは「10:9, 10」のように区切りを残し、数字をつなげないでください（9,10 を 90 にしない）。
 8. 聖句を朗読している部分は、聞こえた言葉をそのまま残してください。本文を自分で補ったり、言い換えたり、省いたりしないでください（明らかな聞き間違いの語だけ直す）。
 9. 区間の境目で文が切れていても、そのままにしてください（前後の区間に文を動かさない）。
-10. 段落：話題が変わるところ、聖句の朗読の前後、問いかけの前などで新しい段落にします。新しい段落を始める位置に空行（\n\n）を入れてください（区間の先頭でも途中でもよい）。段落は長くしすぎず、目安は200〜400字です。直前の内容の最後の段落がすでに長ければ、早めに区切ってください。
+10. 段落：話題が変わるところ、聖句の朗読の前後、問いかけの前などで新しい段落にします。新しい段落を始める位置に空行（改行を2つ）を入れてください（区間の先頭でも途中でもよい）。「\n」という文字を書くのではなく、本当の改行にしてください。段落は長くしすぎず、目安は200〜400字です。直前の内容の最後の段落がすでに長ければ、早めに区切ってください。
 11. 利用者が直した語・例があれば、それに従い、同じ書き方にそろえてください。
 11-2. 入力に「声が変わった可能性のある位置」があれば、そこを段落の区切りの有力な候補にしてください（話し手が替わったか、話が切り替わった可能性があります）。話の流れから見て不自然なら、区切らなくてかまいません。
 12. 出力は JSON だけ：{"segments":["…","…"]}
@@ -672,6 +673,10 @@ object Guard {
         // 聖句の参照が消えていないか（数字の書き方が変わっても「数字:数字」か「章」が残っていればよい）
         val rawHasVerse = VERSE.containsMatchIn(raw) || Scripture.find(raw).isNotEmpty()
         if (rawHasVerse && !(VERSE.containsMatchIn(out) || Scripture.find(out).isNotEmpty())) return false
+        // 実在しない聖句（「10:90」など）を作っていたら使わない（元からあったものは除く）
+        val badOut = Scripture.findInvalid(out).map { Triple(it.book, it.chapter, it.verse) }.toSet()
+        val badRaw = Scripture.findInvalid(raw).map { Triple(it.book, it.chapter, it.verse) }.toSet()
+        if ((badOut - badRaw).isNotEmpty()) return false
         return true
     }
 
@@ -689,3 +694,6 @@ object Guard {
         return prev[b.length]
     }
 }
+
+/** 「\n」という2文字で返ってきた改行を、本当の改行に直す */
+fun fixNewlines(t: String): String = t.replace("\\r\\n", "\n").replace("\\n", "\n")

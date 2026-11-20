@@ -293,7 +293,11 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
                 },
                 // 録音中なら、前の録音を止めてから新しく始める
                 modifier = Modifier.fillMaxWidth().height(56.dp),
-            ) { Text("● 新しく録音する", style = MaterialTheme.typography.titleMedium) }
+            ) {
+                RecDot(size = 14.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("新しく録音する", style = MaterialTheme.typography.titleMedium)
+            }
             // 探す（タイトル・話し手・ラベル・文章）
             OutlinedTextField(
                 value = homeQuery, onValueChange = { homeQuery = it },
@@ -336,16 +340,22 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
                                     s.shownTitle, style = MaterialTheme.typography.titleMedium, maxLines = 1,
                                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                 )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (recording) {
+                                    RecDot(blink = true, size = 10.dp)
+                                    Spacer(Modifier.width(4.dp))
+                                }
                                 Text(
                                     listOfNotNull(
                                         fmtTime(s.startedAt),
                                         fmtClock(s.durationMs),
                                         s.speaker.ifBlank { null },
-                                        if (recording) "● 録音中" else null,
+                                        if (recording) "録音中" else null,
                                         if (Backup.upToDate(context, s)) "☁" else null,
                                     ).joinToString("・"),
                                     style = MaterialTheme.typography.bodySmall,
                                 )
+                                }
                                 if (s.labels.isNotEmpty()) {
                                     Text(
                                         s.labels.joinToString("　") { "#$it" },
@@ -408,7 +418,10 @@ private fun DayHeader(day: String, count: Int, open: Boolean, recording: Boolean
         Text(if (open) "▾" else "▸", color = MaterialTheme.colorScheme.outline)
         Spacer(Modifier.width(8.dp))
         Text(day, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-        if (recording) Text("● ", color = MaterialTheme.colorScheme.error)
+        if (recording) {
+            RecDot(blink = true, size = 12.dp)
+            Spacer(Modifier.width(6.dp))
+        }
         Text(
             "${count}件",
             style = MaterialTheme.typography.labelMedium,
@@ -895,7 +908,9 @@ private fun RecordControls(s: Session, isRec: Boolean, otherRec: Boolean, live: 
     Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
         if (isRec) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("● ${fmtClock(live.elapsedMs(now))}", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                RecDot(blink = true, size = 12.dp)
+                Spacer(Modifier.width(6.dp))
+                Text(fmtClock(live.elapsedMs(now)), color = REC_RED, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.width(8.dp))
                 LevelBar(Modifier.weight(1f))
                 Spacer(Modifier.width(8.dp))
@@ -934,7 +949,11 @@ private fun RecordControls(s: Session, isRec: Boolean, otherRec: Boolean, live: 
                 onClick = { RecorderService.start(context, s.id) },
                 // ほかの記録を録音中なら、それを止めてから始める
                 modifier = Modifier.fillMaxWidth(),
-            ) { Text(if (s.segments.isEmpty()) "● 録音を始める" else "● 続きを録音する") }
+            ) {
+                RecDot(size = 12.dp)
+                Spacer(Modifier.width(8.dp))
+                Text(if (s.segments.isEmpty()) "録音を始める" else "続きを録音する")
+            }
             if (otherRec) Text("いま録音中の記録は止めて、こちらで録音を始めます", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
         }
     }
@@ -961,6 +980,31 @@ private fun AiLine() {
         maxLines = 1,
         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
     )
+}
+
+/** 録音を表す赤 */
+val REC_RED = androidx.compose.ui.graphics.Color(0xFFE53935)
+
+/**
+ * 録音の赤い丸。blink = true のときは、ゆっくり明るくなったり暗くなったりする
+ * （0.6 秒ごとに切り替えるだけ。描き直しは 1 秒に 2 回ほど）。
+ */
+@Composable
+fun RecDot(blink: Boolean = false, size: androidx.compose.ui.unit.Dp = 12.dp) {
+    var dim by remember { mutableStateOf(false) }
+    if (blink) {
+        LaunchedEffect(Unit) {
+            while (true) {
+                delay(600)
+                dim = !dim
+            }
+        }
+    }
+    androidx.compose.foundation.Canvas(Modifier.size(size)) {
+        // 外側にうっすら光の輪
+        drawCircle(REC_RED.copy(alpha = if (dim) 0.12f else 0.3f))
+        drawCircle(REC_RED.copy(alpha = if (dim) 0.45f else 1f), radius = this.size.minDimension * 0.36f)
+    }
 }
 
 /**
@@ -1019,7 +1063,7 @@ private fun LiveBlock(live: Live.State, reference: String) {
     }
     Text(
         buildAnnotatedString {
-            withStyle(SpanStyle(color = MaterialTheme.colorScheme.error, fontSize = 10.sp)) { append("● ") }
+            withStyle(SpanStyle(color = REC_RED, fontSize = 10.sp)) { append("● ") }
             append(text.ifEmpty { "…" })
         },
         style = MaterialTheme.typography.bodyLarge,

@@ -86,8 +86,16 @@ object Repo {
             val f = File(dir, "session.json")
             if (!f.exists()) null else runCatching { fromJson(JSONObject(f.readText())) }.getOrNull()
         } ?: emptyList()
-        // 録音中のままアプリが終わっていたものを直す
-        val fixed = list.map { if (it.recording) it.copy(recording = false).also(::save) else it }
+        // 録音中のままアプリが終わっていたものを直す。「\n」の文字で保存された改行も直す
+        val fixed = list.map { s0 ->
+            var s = s0
+            if (s.segments.any { g -> (g.formatted?.contains("\\n") == true) || (g.edited?.contains("\\n") == true) }) {
+                s = s.copy(segments = s.segments.map { g -> g.copy(formatted = g.formatted?.let(::fixNewlines), edited = g.edited?.let(::fixNewlines)) })
+            }
+            if (s.recording) s = s.copy(recording = false)
+            if (s !== s0) save(s)
+            s
+        }
         _sessions.value = fixed.sortedByDescending { it.startedAt }
     }
 

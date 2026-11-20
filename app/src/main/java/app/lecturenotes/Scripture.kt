@@ -48,32 +48,127 @@ object Scripture {
         put("第一ヨハネ", 62); put("第二ヨハネ", 63); put("第三ヨハネ", 64)
     }
 
-    /** 「ヨハネ 3:16」「マタイ24章14節」「テモテ第二 3:1-5」「ヨハネ3章16節から18節」 */
+    private const val SEP = "(?:章\\s*(?:の)?\\s*|[:：]\\s*)"
+    private const val END = "(?:\\s*(?:[-‐－–〜~～]|から)\\s*(\\d{1,3})(?:\\s*節)?|\\s*[,，、]\\s*(\\d{1,3})(?:\\s*節)?)?"
+
+    private val namesAlt: String by lazy { aliases.keys.sortedByDescending { it.length }.joinToString("|") { Regex.escape(it) } }
+
+    /** 「ヨハネ 3:16」「マタイ24章14節」「テモテ第二 3:1-5」「ヨハネ3章16節から18節」「ヨハネ10章の9節」「10:9,10」 */
     private val pattern: Regex by lazy {
-        val names = aliases.keys.sortedByDescending { it.length }.joinToString("|") { Regex.escape(it) }
-        Regex(
-            "($names)\\s*(?:の)?\\s*(\\d{1,3})\\s*(?:章\\s*|[:：]\\s*)(\\d{1,3})(?:\\s*節)?" +
-                "(?:\\s*(?:[-‐－–〜~～]|から)\\s*(\\d{1,3})(?:\\s*節)?)?",
-        )
+        Regex("($namesAlt)\\s*(?:の)?\\s*(\\d{1,3})\\s*$SEP(\\d{1,3})(?:\\s*節)?$END")
     }
 
-    /** endVerse は「1-5」の 5（なければ null） */
-    data class Ref(val start: Int, val end: Int, val book: Int, val chapter: Int, val verse: Int, val endVerse: Int? = null)
+    /** 書名のない「10章の5節」（同じ文の中で前に出てきた書名を使う）。時刻と区別するため「章」「節」が必要 */
+    private val bookless: Regex by lazy { Regex("(\\d{1,3})\\s*章\\s*(?:の)?\\s*(\\d{1,3})\\s*節$END") }
+    private val bookName: Regex by lazy { Regex(namesAlt) }
 
-    /** 全角数字を半角に（長さは変えない） */
-    private fun normalizeDigits(s: String) = buildString(s.length) {
-        s.forEach { c -> append(if (c in '０'..'９') ('0' + (c - '０')) else c) }
+    /** endVerse は「1-5」「9,10」の後ろの数（なければ null）。valid = 実在する章・節か */
+    data class Ref(val start: Int, val end: Int, val book: Int, val chapter: Int, val verse: Int, val endVerse: Int? = null, val valid: Boolean = true)
+
+    // ---- 章ごとの節の数（assets/verse_counts.txt。実在しない「10:90」などを見分ける）
+    @Volatile private var counts: List<IntArray>? = null
+
+    fun init(context: android.content.Context) {
+        counts = runCatching {
+            context.assets.open("verse_counts.txt").bufferedReader().readLines()
+                .filter { it.isNotBlank() && !it.startsWith("#") }
+                .map { line -> line.split(',').map { it.trim().toInt() }.toIntArray() }
+        }.getOrNull()
     }
 
-    fun find(text: String): List<Ref> {
-        val t = normalizeDigits(text)
-        return pattern.findAll(t).mapNotNull { m ->
-            val book = aliases[m.groupValues[1]] ?: return@mapNotNull null
+    /** 実在する章・節か（表がなければ true）。訳による節の数の違いを考えて 1 節まで余裕を見る */
+    fun exists(book: Int, chapter: Int, verse: Int): Boolean {
+        val c = counts ?: return true
+        val chapters = c.getOrNull(book - 1) ?: return false
+        val max = chapters.getOrNull(chapter - 1) ?: return false
+        return verse in 1..(max + 1)
+    }
+
+    // ---- 漢数字・全角数字を半角数字に（元の位置との対応を残す）
+    private const val KANJI_DIGITS = "〇一二三四五六七八九"
+
+    private class Normalized(val text: String, val start: IntArray, val end: IntArray)
+
+    private fun kanjiValue(seq: String): Int? {
+        var total = 0
+        var cur = 0
+        for (ch in seq) {
+            val d = KANJI_DIGITS.indexOf(ch)
+            when {
+                d >= 0 -> cur = cur * 10 + d
+                ch == '十' -> { total += (if (cur == 0) 1 else cur) * 10; cur = 0 }
+                ch == '百' -> { total += (if (cur == 0) 1 else cur) * 100; cur = 0 }
+                else -> return null
+            }
+        }
+        return total + cur
+    }
+
+    private fun normalize(s: String): Normalized {
+        val sb = StringBuilder()
+        val st = ArrayList<Int>()
+        val en = ArrayList<Int>()
+        var i = 0
+        while (i < s.length) {
+            val c = s[i]
+            if (KANJI_DIGITS.indexOf(c) >= 0 || c == '十' || c == '百') {
+                var j = i
+                while (j < s.length && (KANJI_DIGITS.indexOf(s[j]) >= 0 || s[j] == '十' || s[j] == '百')) j++
+                val v = kanjiValue(s.substring(i, j))
+                // 「章」「節」の前の漢数字だけ変える（「コリント第一」などの書名はそのまま）
+                var k2 = j
+                while (k2 < s.length && (s[k2] == ' ' || s[k2] == '　')) k2++
+                val beforeUnit = k2 < s.length && (s[k2] == '章' || s[k2] == '節')
+                if (v != null && v in 1..999 && beforeUnit) {
+                    v.toString().forEach { d -> sb.append(d); st.add(i); en.add(j) }
+                } else {
+                    for (k in i until j) { sb.append(s[k]); st.add(k); en.add(k + 1) }
+                }
+                i = j
+                continue
+            }
+            sb.append(if (c in '０'..'９') ('0' + (c - '０')) else c)
+            st.add(i)
+            en.add(i + 1)
+            i++
+        }
+        return Normalized(sb.toString(), st.toIntArray(), en.toIntArray())
+    }
+
+    /** 実在するものも、しないものも含めて全部 */
+    fun findAll(text: String): List<Ref> {
+        if (text.isEmpty()) return emptyList()
+        val n = normalize(text)
+        val t = n.text
+        fun orig(a: Int, b: Int) = n.start[a] to n.end[b - 1]
+        val out = ArrayList<Ref>()
+        for (m in pattern.findAll(t)) {
+            val book = aliases[m.groupValues[1]] ?: continue
+            val ch = m.groupValues[2].toInt()
             val v = m.groupValues[3].toInt()
-            val ev = m.groupValues[4].toIntOrNull()?.takeIf { it > v }
-            Ref(m.range.first, m.range.last + 1, book, m.groupValues[2].toInt(), v, ev)
-        }.toList()
+            val ev = (m.groupValues[4].toIntOrNull() ?: m.groupValues[5].toIntOrNull())?.takeIf { it > v }
+            val (a, b) = orig(m.range.first, m.range.last + 1)
+            out.add(Ref(a, b, book, ch, v, ev, exists(book, ch, v) && (ev == null || exists(book, ch, ev))))
+        }
+        // 書名のない「10章の5節」：前に出てきた書名を使う
+        val books = bookName.findAll(t).map { it.range.last + 1 to aliases[it.value] }.toList()
+        for (m in bookless.findAll(t)) {
+            val (a, b) = orig(m.range.first, m.range.last + 1)
+            if (out.any { a < it.end && b > it.start }) continue
+            val book = books.lastOrNull { it.first <= m.range.first }?.second ?: continue
+            val ch = m.groupValues[1].toInt()
+            val v = m.groupValues[2].toInt()
+            val ev = (m.groupValues[3].toIntOrNull() ?: m.groupValues[4].toIntOrNull())?.takeIf { it > v }
+            out.add(Ref(a, b, book, ch, v, ev, exists(book, ch, v) && (ev == null || exists(book, ch, ev))))
+        }
+        return out.sortedBy { it.start }
     }
+
+    /** リンクにする参照（実在するものだけ） */
+    fun find(text: String): List<Ref> = findAll(text).filter { it.valid }
+
+    /** 実在しない参照（「10:90」など。整形の誤りを見つけるのに使う） */
+    fun findInvalid(text: String): List<Ref> = findAll(text).filter { !it.valid }
 
     /** JW Library の聖句の番号（書・章・節を 2・3・3 桁で。例 ヨハネ 3:16 → 43003016）。範囲は「-」でつなぐ */
     private fun bibleParam(r: Ref): String {

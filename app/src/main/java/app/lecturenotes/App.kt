@@ -9,6 +9,7 @@ class App : Application() {
         Meta.init(this)
         Usage.init(this)
         Power.init(this)
+        Scripture.init(this)
         Processor.start(this)
     }
 }
