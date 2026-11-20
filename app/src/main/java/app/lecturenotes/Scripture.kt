@@ -9,8 +9,15 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextDecoration
 
 /**
- * 聖句の参照（例「ヨハネ 3:16」「マタイ24章14節」）を見つけて、wol.jw.org の該当の章へのリンクにする。
+ * 聖句の参照（例「ヨハネ 3:16」「コリント人への第一の手紙9章10節」「十章の五節」）を見つけて、
+ * JW Library で開くリンクにし、「コリント第一9:10」の形にそろえる。
  * 本文は取りに行かない（jw.org の利用規約で、サイトから自動でデータを取り出すことは禁じられているため）。
+ *
+ * 書名の見つけ方：
+ *  1. 「◯章◯節」「◯:◯」の直前の語を書名とみなす（いろいろな言い方を登録してある）
+ *  2. 登録にない言い方でも、聞き間違いで少し違う程度なら近い書名に当てはめる（ひらがなも読む）
+ *  3. 用語集の「誤→正」で、正しい側が書名のものは、書名の言い換えとして覚える
+ *  4. 書名がなく「◯章◯節」だけのときは、同じ文の中で前に出てきた書名を使う（文には書名を書き足さない）
  */
 object Scripture {
     /** 新世界訳の書名（並び＝書の番号） */
@@ -26,44 +33,99 @@ object Scripture {
         "ヨハネ第三", "ユダ", "啓示",
     )
 
-    /** 話し言葉・ほかの訳の書名 → 書の番号 */
-    private val aliases: Map<String, Int> = buildMap {
+    private val KANJI_ORD = listOf("一", "二", "三")
+
+    /** 組み込みの言い方 → 書の番号 */
+    private val builtIn: Map<String, Int> = buildMap {
         books.forEachIndexed { i, b -> put(b, i + 1) }
-        // 「記」「書」を付けない言い方
-        books.forEachIndexed { i, b ->
-            if (b.endsWith("記") || b.endsWith("書")) put(b.dropLast(1), i + 1)
-        }
-        put("裁き人の書", 7); put("士師記", 7)
-        put("詩篇", 19); put("格言の書", 20); put("箴言", 20); put("伝道者の書", 21); put("雅歌", 22)
-        put("マタイによる福音書", 40); put("マルコによる福音書", 41); put("ルカによる福音書", 42); put("ヨハネによる福音書", 43)
-        put("使徒行伝", 44); put("使徒の活動", 44)
-        put("エペソ", 49); put("ピリピ", 50); put("ヘブル", 58)
-        put("黙示録", 66); put("ヨハネの黙示録", 66)
-        // 「第一コリント」のような言い方
-        listOf("サムエル記" to 9, "列王記" to 11, "歴代誌" to 13, "コリント" to 46, "テサロニケ" to 52, "テモテ" to 54, "ペテロ" to 60)
-            .forEach { (n, first) ->
-                put("第一$n", first); put("第二$n", first + 1)
-                put("${n}一", first); put("${n}二", first + 1)
+        books.forEachIndexed { i, b -> if (b.endsWith("記") || b.endsWith("書")) put(b.dropLast(1), i + 1) }
+        // 第一・第二…の付く書（「コリント人への第一の手紙」「第1コリント」「コリント1」など）
+        val ordinal = listOf(
+            "サムエル記" to 9, "列王記" to 11, "歴代誌" to 13, "コリント" to 46, "テサロニケ" to 52,
+            "テモテ" to 54, "ペテロ" to 60, "ヨハネ" to 62,
+        )
+        for ((base, first) in ordinal) {
+            val count = if (base == "ヨハネ") 3 else 2
+            val short = base.removeSuffix("記")
+            for (k in 0 until count) {
+                val kj = KANJI_ORD[k]
+                val ar = (k + 1).toString()
+                val b = first + k
+                for (n in listOf(base, short)) {
+                    for (o in listOf(kj, ar)) {
+                        put("${n}第$o", b); put("第$o$n", b); put("$n$o", b)
+                        put("${n}の第$o", b); put("${n}第${o}の手紙", b); put("${n}の第${o}の手紙", b)
+                        put("${n}人への第${o}の手紙", b); put("${n}人への第$o", b); put("${n}人への手紙第$o", b)
+                        put("${n}への第${o}の手紙", b); put("第$o${n}人への手紙", b)
+                    }
+                }
             }
-        put("第一ヨハネ", 62); put("第二ヨハネ", 63); put("第三ヨハネ", 64)
+        }
+        // 手紙
+        listOf(
+            "ローマ" to 45, "ガラテア" to 48, "エフェソス" to 49, "エペソ" to 49, "フィリピ" to 50, "ピリピ" to 50,
+            "コロサイ" to 51, "ヘブライ" to 58, "ヘブル" to 58,
+        ).forEach { (n, b) -> put(n, b); put("${n}人への手紙", b); put("${n}人への", b); put("${n}の手紙", b) }
+        listOf("テトス" to 56, "フィレモン" to 57).forEach { (n, b) -> put("${n}への手紙", b); put("${n}の手紙", b) }
+        listOf("ヤコブ" to 59, "ユダ" to 65).forEach { (n, b) -> put("${n}の手紙", b); put("${n}書", b) }
+        // 福音書
+        listOf("マタイ" to 40, "マルコ" to 41, "ルカ" to 42, "ヨハネ" to 43).forEach { (n, b) ->
+            put("${n}による福音書", b); put("${n}の福音書", b); put("${n}福音書", b); put("${n}による", b)
+        }
+        // そのほか
+        put("裁き人の書", 7); put("士師記", 7); put("士師", 7)
+        put("詩篇", 19); put("格言の書", 20); put("箴言", 20); put("伝道者の書", 21); put("伝道", 21); put("雅歌", 22)
+        put("使徒行伝", 44); put("使徒の活動", 44); put("使徒たちの活動", 44)
+        put("黙示録", 66); put("ヨハネの黙示録", 66); put("ヨハネへの啓示", 66); put("啓示の書", 66)
     }
 
-    private const val SEP = "(?:章\\s*(?:の)?\\s*|[:：]\\s*)"
-    private const val END = "(?:\\s*(?:[-‐－–〜~～]|から)\\s*(\\d{1,3})(?:\\s*節)?|\\s*[,，、]\\s*(\\d{1,3})(?:\\s*節)?)?"
+    /** 用語集から覚えた言い方 → 書の番号 */
+    @Volatile private var user: Map<String, Int> = emptyMap()
 
-    private val namesAlt: String by lazy { aliases.keys.sortedByDescending { it.length }.joinToString("|") { Regex.escape(it) } }
+    private val aliases: Map<String, Int> get() = builtIn + user
 
-    /** 「ヨハネ 3:16」「マタイ24章14節」「テモテ第二 3:1-5」「ヨハネ3章16節から18節」「ヨハネ10章の9節」「10:9,10」 */
-    private val pattern: Regex by lazy {
-        Regex("($namesAlt)\\s*(?:の)?\\s*(\\d{1,3})\\s*$SEP(\\d{1,3})(?:\\s*節)?$END")
+    /** 長い言い方から順に（「ヨハネ第一」を「ヨハネ」より先に見る） */
+    @Volatile private var sortedNames: List<Pair<String, Int>> = emptyList()
+
+    /** sortedNames をカタカナにしたもの */
+    @Volatile private var sortedKana: List<Pair<String, Int>> = emptyList()
+
+    private fun rebuild() {
+        sortedNames = aliases.entries.map { it.key to it.value }.sortedByDescending { it.first.length }
+        sortedKana = sortedNames.map { toKatakana(it.first) to it.second }
     }
 
-    /** 書名のない「10章の5節」（同じ文の中で前に出てきた書名を使う）。時刻と区別するため「章」「節」が必要 */
-    private val bookless: Regex by lazy { Regex("(\\d{1,3})\\s*章\\s*(?:の)?\\s*(\\d{1,3})\\s*節$END") }
-    private val bookName: Regex by lazy { Regex(namesAlt) }
+    /** 用語集の「誤→正」のうち、正しい側が書名のものを、書名の言い換えとして覚える */
+    fun setUserAliases(glossary: String) {
+        val m = HashMap<String, Int>()
+        glossary.lines().map { it.trim() }.filter { !it.startsWith("#") }.forEach { line ->
+            val i = line.indexOfAny(charArrayOf('→', '＞'))
+            if (i <= 0) return@forEach
+            val wrong = line.substring(0, i).trim()
+            val right = line.substring(i + 1).trim().replace(" ", "")
+            val b = builtIn[right] ?: return@forEach
+            if (wrong.isNotEmpty() && wrong.length <= 20) m[wrong] = b
+        }
+        user = m
+        rebuild()
+    }
 
-    /** endVerse は「1-5」「9,10」の後ろの数（なければ null）。valid = 実在する章・節か */
-    data class Ref(val start: Int, val end: Int, val book: Int, val chapter: Int, val verse: Int, val endVerse: Int? = null, val valid: Boolean = true)
+    init {
+        rebuild()
+    }
+
+    // ---- 章・節の形（書名は別に探す）
+    private const val END = "(?:\\s*(?:[-‐－–〜~～]|から)\\s*(\\d{1,3})(?:\\s*節)?|\\s*[,，、]\\s*(\\d{1,3})(?!\\d|\\s*[人年月日時分歳回個つ件冊])(?:\\s*節)?)?"
+    private val cv = Regex("(\\d{1,3})\\s*(?:章\\s*(?:の)?\\s*(\\d{1,3})\\s*(節)?|[:：]\\s*(\\d{1,3}))$END")
+
+    /**
+     * endVerse は「1-5」「9,10」の後ろの数（なければ null）。list = 「9,10」の形。
+     * valid = 実在する章・節か。bookless = 文の中に書名がなく、前に出てきた書名を使ったもの
+     */
+    data class Ref(
+        val start: Int, val end: Int, val book: Int, val chapter: Int, val verse: Int,
+        val endVerse: Int? = null, val valid: Boolean = true, val list: Boolean = false, val bookless: Boolean = false,
+    )
 
     // ---- 章ごとの節の数（assets/verse_counts.txt。実在しない「10:90」などを見分ける）
     @Volatile private var counts: List<IntArray>? = null
@@ -74,6 +136,7 @@ object Scripture {
                 .filter { it.isNotBlank() && !it.startsWith("#") }
                 .map { line -> line.split(',').map { it.trim().toInt() }.toIntArray() }
         }.getOrNull()
+        runCatching { setUserAliases(Glossary.load(context)) }
     }
 
     /** 実在する章・節か（表がなければ true）。訳による節の数の違いを考えて 1 節まで余裕を見る */
@@ -135,6 +198,51 @@ object Scripture {
         return Normalized(sb.toString(), st.toIntArray(), en.toIntArray())
     }
 
+    // ---- 書名を探す
+    private fun toKatakana(s: String) = buildString { s.forEach { c -> append(if (c in 'ぁ'..'ゖ') c + 0x60 else c) } }
+
+    private fun isNameChar(c: Char) =
+        c in 'ァ'..'ヶ' || c == 'ー' || c in 'ぁ'..'ゖ' || c in '一'..'龥' || c == '々' || c.isDigit() || c == '第'
+
+    private fun distance(a: String, b: String): Int {
+        val dp = IntArray(b.length + 1) { it }
+        for (i in 1..a.length) {
+            var prev = dp[0]
+            dp[0] = i
+            for (j in 1..b.length) {
+                val tmp = dp[j]
+                dp[j] = minOf(dp[j] + 1, dp[j - 1] + 1, prev + if (a[i - 1] == b[j - 1]) 0 else 1)
+                prev = tmp
+            }
+        }
+        return dp[b.length]
+    }
+
+    /** 文の終わり（章・節の直前）にある書名。見つかれば（書名の長さ, 書の番号） */
+    private fun bookBefore(prefix: String): Pair<Int, Int>? {
+        // 1) 登録してある言い方（ひらがなはカタカナにして比べる）
+        val pk = toKatakana(prefix)
+        for ((name, b) in sortedKana) {
+            if (pk.endsWith(name)) return name.length to b
+        }
+        // 2) 聞き間違い：直前の語（書名に使う文字の続き）の終わりの部分を、近い書名に当てはめる
+        var r = prefix.length
+        while (r > 0 && isNameChar(prefix[r - 1]) && prefix.length - r < 14) r--
+        val run = toKatakana(prefix.substring(r))
+        var best: Triple<Int, Int, Int>? = null // (長さ, 書, 距離)
+        for (len in minOf(run.length, 14) downTo 3) {
+            val s = run.takeLast(len)
+            for ((n, b) in sortedKana) {
+                if (n.length < 3) continue
+                val allow = if (n.length >= 5) 2 else 1
+                if (kotlin.math.abs(n.length - s.length) > allow) continue
+                val d = distance(s, n)
+                if (d <= allow && (best == null || d < best.third || (d == best.third && len > best.first))) best = Triple(len, b, d)
+            }
+        }
+        return best?.let { it.first to it.second }
+    }
+
     /** 実在するものも、しないものも含めて全部 */
     fun findAll(text: String): List<Ref> {
         if (text.isEmpty()) return emptyList()
@@ -142,26 +250,53 @@ object Scripture {
         val t = n.text
         fun orig(a: Int, b: Int) = n.start[a] to n.end[b - 1]
         val out = ArrayList<Ref>()
-        for (m in pattern.findAll(t)) {
-            val book = aliases[m.groupValues[1]] ?: continue
-            val ch = m.groupValues[2].toInt()
-            val v = m.groupValues[3].toInt()
-            val ev = (m.groupValues[4].toIntOrNull() ?: m.groupValues[5].toIntOrNull())?.takeIf { it > v }
-            val (a, b) = orig(m.range.first, m.range.last + 1)
-            out.add(Ref(a, b, book, ch, v, ev, exists(book, ch, v) && (ev == null || exists(book, ch, ev))))
-        }
-        // 書名のない「10章の5節」：前に出てきた書名を使う
-        val books = bookName.findAll(t).map { it.range.last + 1 to aliases[it.value] }.toList()
-        for (m in bookless.findAll(t)) {
-            val (a, b) = orig(m.range.first, m.range.last + 1)
-            if (out.any { a < it.end && b > it.start }) continue
-            val book = books.lastOrNull { it.first <= m.range.first }?.second ?: continue
+        var lastBook: Int? = null
+        var lastBookPos = -1
+        var lastEnd = -1 // 前の参照の終わり（正規化した文の位置）
+        for (m in cv.findAll(t)) {
             val ch = m.groupValues[1].toInt()
-            val v = m.groupValues[2].toInt()
-            val ev = (m.groupValues[3].toIntOrNull() ?: m.groupValues[4].toIntOrNull())?.takeIf { it > v }
-            out.add(Ref(a, b, book, ch, v, ev, exists(book, ch, v) && (ev == null || exists(book, ch, ev))))
+            val viaChapter = m.groupValues[2].isNotEmpty()
+            val v = (m.groupValues[2].ifEmpty { m.groupValues[4] }).toIntOrNull() ?: continue
+            val hasSetsu = m.groupValues[3].isNotEmpty()
+            val ev = (m.groupValues[5].toIntOrNull() ?: m.groupValues[6].toIntOrNull())?.takeIf { it > v }
+            val list = m.groupValues[6].isNotEmpty() && ev != null
+            // 直前の書名（間の空白・「の」は飛ばす）
+            val prefixRaw = t.substring(maxOf(0, m.range.first - 30), m.range.first)
+            val prefix = prefixRaw.trimEnd(' ', '　', 'の', 'ノ')
+            val gap = prefixRaw.length - prefix.length
+            val found = bookBefore(prefix)
+            val (start, book, bookless) = when {
+                found != null -> Triple(m.range.first - gap - found.first, found.second, false)
+                // 書名がない「◯章◯節」は、前に出てきた書名を使う（時刻と区別するため「章」「節」が必要）
+                viaChapter && hasSetsu -> {
+                    val b = mentionedBefore(t, m.range.first, lastBook, lastBookPos) ?: continue
+                    Triple(m.range.first, b, true)
+                }
+                else -> continue
+            }
+            if (start < lastEnd) continue
+            val (a, bEnd) = orig(start.coerceAtLeast(0), m.range.last + 1)
+            out.add(Ref(a, bEnd, book, ch, v, ev, exists(book, ch, v) && (ev == null || exists(book, ch, ev)), list, bookless))
+            lastBook = book
+            lastBookPos = m.range.last
+            lastEnd = m.range.last + 1
         }
-        return out.sortedBy { it.start }
+        return out
+    }
+
+    /** pos より前に出てきた書名（参照の書名か、文の中の書名） */
+    private fun mentionedBefore(t: String, pos: Int, lastBook: Int?, lastBookPos: Int): Int? {
+        val before = toKatakana(t.substring(0, pos))
+        var best: Pair<Int, Int>? = null // (位置, 書)
+        for ((name, b) in sortedKana) {
+            val k = before.lastIndexOf(name)
+            if (k >= 0 && (best == null || k > best.first)) best = k to b
+        }
+        return when {
+            best != null && best.first > lastBookPos -> best.second
+            lastBook != null -> lastBook
+            else -> best?.second
+        }
     }
 
     /** リンクにする参照（実在するものだけ） */
@@ -169,6 +304,26 @@ object Scripture {
 
     /** 実在しない参照（「10:90」など。整形の誤りを見つけるのに使う） */
     fun findInvalid(text: String): List<Ref> = findAll(text).filter { !it.valid }
+
+    /** 「コリント第一9:10」の形（書名がなかったものは「9:10」） */
+    fun canonical(r: Ref): String {
+        val tail = when {
+            r.endVerse == null -> ""
+            r.list -> ",${r.endVerse}"
+            else -> "-${r.endVerse}"
+        }
+        val head = if (r.bookless) "" else books[r.book - 1]
+        return "$head${r.chapter}:${r.verse}$tail"
+    }
+
+    /** 文の中の聖句を「コリント第一9:10」の形に書き直す（実在するものだけ） */
+    fun normalizeRefs(text: String): String {
+        val refs = find(text)
+        if (refs.isEmpty()) return text
+        val sb = StringBuilder(text)
+        for (r in refs.sortedByDescending { it.start }) sb.replace(r.start, r.end, canonical(r))
+        return sb.toString()
+    }
 
     /** JW Library の聖句の番号（書・章・節を 2・3・3 桁で。例 ヨハネ 3:16 → 43003016）。範囲は「-」でつなぐ */
     private fun bibleParam(r: Ref): String {

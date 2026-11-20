@@ -18,7 +18,11 @@ object Glossary {
         return f.readText()
     }
 
-    fun save(context: Context, text: String) = file(context).writeText(text)
+    fun save(context: Context, text: String) {
+        file(context).writeText(text)
+        // 「誤→正」で正しい側が書名のものは、聖句の書名の言い換えとして覚える
+        Scripture.setUserAliases(text)
+    }
 
     fun reset(context: Context) = save(context, default(context))
 
