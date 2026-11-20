@@ -965,6 +965,8 @@ private fun SummaryCard(s: Session) {
 private fun RecordControls(s: Session, isRec: Boolean, otherRec: Boolean, live: Live.State, now: Long, onMark: () -> Unit) {
     val context = LocalContext.current
     var stopArmed by remember { mutableStateOf(false) }
+    /** 完了を押したとき、前の要約を作り直すか聞いているところ */
+    var askRedo by remember(s.id) { mutableStateOf(false) }
     LaunchedEffect(stopArmed) {
         if (stopArmed) {
             delay(3000)
@@ -1031,11 +1033,39 @@ private fun RecordControls(s: Session, isRec: Boolean, otherRec: Boolean, live: 
                 if (s.segments.isNotEmpty()) {
                     OutlinedButton(
                         onClick = {
-                            Repo.update(s.id) { it.copy(completed = true) }
-                            Processor.wake()
+                            // 前の要約があれば、作り直すかどうかをその場で聞く
+                            if (s.summary != null) askRedo = true
+                            else {
+                                Repo.update(s.id) { it.copy(completed = true) }
+                                Processor.wake()
+                            }
                         },
                         modifier = Modifier.weight(1f),
                     ) { Text("✓ 完了") }
+                }
+            }
+            if (askRedo) {
+                val grown = s.durationMs > s.summaryDurationMs + 1000 && s.summaryDurationMs > 0
+                Column(
+                    Modifier.fillMaxWidth().padding(top = 6.dp)
+                        .background(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                ) {
+                    Text(
+                        "前の要約があります。作り直しますか？" + if (grown) "（そのあと録音が増えています）" else "",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.align(Alignment.End)) {
+                        TextButton(onClick = {
+                            askRedo = false
+                            Repo.update(s.id) { it.copy(completed = true) }
+                        }) { Text("そのまま") }
+                        Button(onClick = {
+                            askRedo = false
+                            Repo.update(s.id) { it.copy(completed = true, summary = null, summaryModel = null) }
+                            Processor.wake()
+                        }) { Text("作り直す") }
+                    }
                 }
             }
             if (otherRec) Text("いま録音中の記録は止めて、こちらで録音を始めます", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)

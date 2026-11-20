@@ -500,7 +500,7 @@ object Processor {
                 used(Role.POLISH, c)
                 val text = Scripture.normalizeRefs(fixNewlines(out).replace(Regex("^```[a-z]*\\s*|```\\s*$"), "").trim())
                 if (text.length < 10) throw IllegalStateException("要約が空でした")
-                Repo.update(s.id) { if (it.summary == null) it.copy(summary = text, summaryModel = c.model) else it }
+                Repo.update(s.id) { if (it.summary == null) it.copy(summary = text, summaryModel = c.model, summaryDurationMs = it.durationMs) else it }
                 polishStatus.value = ""
                 return true
             } catch (e: RateLimited) {

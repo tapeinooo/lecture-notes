@@ -56,6 +56,8 @@ data class Session(
     /** 要約（頭の良い AI が作る）と、作ったモデル・形 */
     val summary: String? = null,
     val summaryModel: String? = null,
+    /** 要約を作ったときの録音の長さ（そのあと録音が増えたかを見るため） */
+    val summaryDurationMs: Long = 0,
     /** 声が変わったらしい時刻（記録の中のミリ秒）。段落を区切る参考 */
     val voiceChanges: List<Long> = emptyList(),
 ) {
@@ -178,6 +180,7 @@ object Repo {
         put("completed", s.completed)
         s.summary?.let { put("summary", it) }
         s.summaryModel?.let { put("summaryModel", it) }
+        put("summaryDurationMs", s.summaryDurationMs)
         put("labels", JSONArray(s.labels))
         put("voiceChanges", JSONArray(s.voiceChanges))
         put("recording", s.recording)
@@ -246,6 +249,7 @@ object Repo {
             completed = j.optBoolean("completed"),
             summary = if (j.has("summary")) j.getString("summary") else null,
             summaryModel = if (j.has("summaryModel")) j.getString("summaryModel") else null,
+            summaryDurationMs = j.optLong("summaryDurationMs"),
             labels = j.optJSONArray("labels")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList(),
             voiceChanges = j.optJSONArray("voiceChanges")?.let { a -> (0 until a.length()).map { a.getLong(it) } } ?: emptyList(),
         )
