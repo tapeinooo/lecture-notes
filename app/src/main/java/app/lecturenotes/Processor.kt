@@ -241,6 +241,7 @@ object Processor {
                 val text = timed(c, Role.STT) { to ->
                     when (c.provider) {
                         "groq" -> Groq.transcribe(settings.groqKey, c.model, file, Prompts.whisper(glossary, s, seg), to)
+                        "cloudflare" -> Cloudflare.transcribe(settings.cfAccountId, settings.cfToken, file, Prompts.whisper(glossary, s, seg), to)
                         else -> Gemini.transcribe(settings.geminiKey, c.model, file, Prompts.stt(glossary, s, seg), to)
                     }
                 }
@@ -488,6 +489,7 @@ object Processor {
                 val out = timed(c, Role.POLISH) { to ->
                     when (c.provider) {
                         "groq" -> Groq.chat(st.groqKey, c.model, system, user, fast = false, timeoutMs = to, json = false)
+                        "openrouter" -> OpenRouter.chat(st.openRouterKey, c.model, system, user, to)
                         else -> Gemini.generate(
                             st.geminiKey, c.model, system,
                             org.json.JSONArray().put(org.json.JSONObject().put("text", user)), json = false, timeoutMs = to,
@@ -566,6 +568,7 @@ object Processor {
                     val out = timed(c, Role.POLISH) { to ->
                         when (c.provider) {
                             "groq" -> Groq.chat(st.groqKey, c.model, system, user, fast = false, timeoutMs = to)
+                            "openrouter" -> OpenRouter.chat(st.openRouterKey, c.model, system, user, to)
                             else -> Gemini.text(st.geminiKey, c.model, system, user, fast = false, timeoutMs = to)
                         }
                     }

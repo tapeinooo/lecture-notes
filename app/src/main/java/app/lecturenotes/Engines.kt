@@ -72,10 +72,26 @@ object Http {
         // 無料枠では使えないモデル
         if (Regex("limit:\\s*0\\b").containsMatchIn(body)) return 24 * 3600_000L
         // 1日の上限：Gemini は太平洋時間の0時に戻る
+        // Cloudflare：1日の無料分（ニューロン）を使い切った → 世界時の0時（日本の朝9時）に戻る
+        if (body.contains("neuron", ignoreCase = true) || body.contains("daily free allocation", ignoreCase = true)) return msUntilUtcMidnight()
+        // OpenRouter：1日の回数（free-models-per-day）。戻る時刻を教えてくれればそれを使う
+        if (body.contains("per-day", ignoreCase = true)) {
+            c.getHeaderField("X-RateLimit-Reset")?.trim()?.toLongOrNull()?.let { reset ->
+                val ms = (if (reset < 10_000_000_000L) reset * 1000 else reset) - System.currentTimeMillis()
+                if (ms > 0) return ms + 60_000
+            }
+            return msUntilUtcMidnight()
+        }
         if (body.contains("PerDay", ignoreCase = true) || body.contains("per day", ignoreCase = true)) return msUntilPacificMidnight()
         // Gemini: "retryDelay": "36s"
         Regex("\"retryDelay\"\\s*:\\s*\"(\\d+)").find(body)?.let { return it.groupValues[1].toLong() * 1000 + 1000 }
         return 60_000
+    }
+
+    private fun msUntilUtcMidnight(): Long {
+        val now = java.time.ZonedDateTime.now(java.time.ZoneOffset.UTC)
+        val next = now.toLocalDate().plusDays(1).atStartOfDay(java.time.ZoneOffset.UTC)
+        return java.time.Duration.between(now, next).toMillis() + 60_000
     }
 
     private fun msUntilPacificMidnight(): Long {
@@ -276,5 +292,72 @@ object Gemini {
             }
             .map { it.optString("name").removePrefix("models/") }
             .filter { it.startsWith("gemini") || it.startsWith("gemma") }
+    }
+}
+
+/** Cloudflare Workers AI（聞き取りの予備）。無料：1日1万ニューロン ≒ whisper-large-v3-turbo で約3.5時間 */
+object Cloudflare {
+    const val WHISPER = "@cf/openai/whisper-large-v3-turbo"
+
+    /** 1日に文字起こしできる音声の長さの目安（秒） */
+    const val DAILY_SEC = 12_800.0
+
+    fun transcribe(account: String, token: String, audio: File, prompt: String, timeoutMs: Int): String {
+        val body = JSONObject()
+            .put("audio", Base64.encodeToString(Audio.toWavBytes(audio), Base64.NO_WRAP))
+            .put("language", "ja")
+            .put("task", "transcribe")
+        if (prompt.isNotBlank()) body.put("initial_prompt", prompt)
+        val resp = Http.post(
+            "https://api.cloudflare.com/client/v4/accounts/${account.trim()}/ai/run/$WHISPER",
+            mapOf("Authorization" to "Bearer ${token.trim()}"),
+            body.toString().toByteArray(),
+            "application/json",
+            timeoutMs,
+        )
+        val j = JSONObject(resp)
+        if (!j.optBoolean("success", true)) throw HttpError(200, j.optJSONArray("errors")?.toString()?.take(200) ?: "失敗")
+        return j.optJSONObject("result")?.optString("text")?.trim() ?: ""
+    }
+
+    /** つながるか確かめる（トークンの確認） */
+    fun verify(token: String): String {
+        val j = JSONObject(Http.get("https://api.cloudflare.com/client/v4/user/tokens/verify", mapOf("Authorization" to "Bearer ${token.trim()}")))
+        return if (j.optBoolean("success")) "OK" else j.optJSONArray("errors")?.toString()?.take(150) ?: "失敗"
+    }
+}
+
+/** OpenRouter（仕上げ・要約の予備）。:free のモデルは1日50回まで（10ドル入れると1000回） */
+object OpenRouter {
+    private const val BASE = "https://openrouter.ai/api/v1"
+
+    fun chat(key: String, model: String, system: String, user: String, timeoutMs: Int): String {
+        val body = JSONObject().apply {
+            put("model", model)
+            put("temperature", 0.2)
+            put("messages", JSONArray().apply {
+                put(JSONObject().put("role", "system").put("content", system))
+                put(JSONObject().put("role", "user").put("content", user))
+            })
+        }
+        val resp = Http.post(
+            "$BASE/chat/completions",
+            mapOf("Authorization" to "Bearer ${key.trim()}", "X-Title" to "lecture-notes"),
+            body.toString().toByteArray(),
+            "application/json",
+            timeoutMs,
+        )
+        val j = JSONObject(resp)
+        j.optJSONObject("error")?.let { throw HttpError(it.optInt("code", 500), it.optString("message").take(200)) }
+        return j.getJSONArray("choices").getJSONObject(0).getJSONObject("message").optString("content")
+    }
+
+    /** :free のモデルの一覧（文脈の長さが十分なもの） */
+    fun listFreeModels(key: String): List<String> {
+        val resp = Http.get("$BASE/models", mapOf("Authorization" to "Bearer ${key.trim()}"))
+        val arr = JSONObject(resp).optJSONArray("data") ?: JSONArray()
+        return (0 until arr.length()).map { arr.getJSONObject(it) }
+            .filter { it.optString("id").endsWith(":free") && it.optInt("context_length", 0) >= 16_000 }
+            .map { it.optString("id") }
     }
 }

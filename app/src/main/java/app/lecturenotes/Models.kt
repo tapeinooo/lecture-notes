@@ -20,7 +20,7 @@ data class Cand(val provider: String, val model: String) {
             if (i <= 0) return null
             val p = t.substring(0, i).trim().lowercase()
             val m = t.substring(i + 1).trim()
-            if (m.isEmpty() || (p != "groq" && p != "gemini")) return null
+            if (m.isEmpty() || p !in listOf("groq", "gemini", "cloudflare", "openrouter")) return null
             return Cand(p, m)
         }
     }
@@ -83,12 +83,16 @@ gemini:gemini-2.5-flash
 
     fun geminiModels(ctx: Context) = list(ctx, "gemini", DEFAULT_GEMINI)
     fun groqModels(ctx: Context) = list(ctx, "groq", DEFAULT_GROQ)
+    fun openRouterModels(ctx: Context) = list(ctx, "openrouter", emptyList())
 
-    private fun keysHash(st: Settings) = (st.geminiKey + "|" + st.groqKey).hashCode()
+    /** OpenRouter の :free で、仕上げに向く大きなモデルを先に */
+    private val OR_PREF = listOf("deepseek", "qwen3-235b", "kimi", "gpt-oss-120b", "llama-3.3-70b", "llama-4", "gemma-3-27b", "mistral")
+
+    private fun keysHash(st: Settings) = (st.geminiKey + "|" + st.groqKey + "|" + st.openRouterKey).hashCode()
 
     /** 半日たったか、キーが変わったら取り直す */
     fun needsRefresh(ctx: Context, st: Settings): Boolean {
-        if (st.geminiKey.isBlank() && st.groqKey.isBlank()) return false
+        if (st.geminiKey.isBlank() && st.groqKey.isBlank() && st.openRouterKey.isBlank()) return false
         val p = prefs(ctx)
         return System.currentTimeMillis() - p.getLong("at", 0) > 12 * 3600_000L || p.getInt("keys", 0) != keysHash(st)
     }
@@ -104,6 +108,15 @@ gemini:gemini-2.5-flash
                 msgs.add("Gemini：${g.size}個")
             } catch (ex: Exception) {
                 msgs.add("Gemini：取れません ${ex.message?.take(100)}")
+            }
+        }
+        if (st.openRouterKey.isNotBlank()) {
+            try {
+                val g = OpenRouter.listFreeModels(st.openRouterKey)
+                e.putString("openrouter", JSONArray(g).toString())
+                msgs.add("OpenRouter：無料のモデル ${g.size}個")
+            } catch (ex: Exception) {
+                msgs.add("OpenRouter：取れません ${ex.message?.take(100)}")
             }
         }
         if (st.groqKey.isNotBlank()) {
@@ -188,7 +201,8 @@ gemini:gemini-2.5-flash
                     .map { Cand("groq", it) }
                 val m = gem.filter { sttScore(it) > 0 }.sortedByDescending { sttScore(it) }.take(6)
                     .map { Cand("gemini", it.name) }
-                g + m
+                // Groq → Cloudflare（1日約3.5時間）→ Gemini
+                g + Cand("cloudflare", Cloudflare.WHISPER) + m
             }
             Role.FAST -> {
                 val gm = gem.filter { it.tier != Tier.GEMMA && fastScore(it) > 0 }.sortedByDescending { fastScore(it) }
@@ -204,8 +218,12 @@ gemini:gemini-2.5-flash
                 lite + gq + gemma
             }
             // 仕上げ：頭の良い Gemini から。Gemini が今日の上限に達しても止まらないよう、Groq の大きなモデルを後ろに
+            // 仕上げ：Gemini Flash → Gemma → OpenRouter（:free の大きなモデル、1日50回）→ Groq
             Role.POLISH -> gem.filter { polishScore(it) > 0 }.sortedByDescending { polishScore(it) }.take(7)
                 .map { Cand("gemini", it.name) } +
+                openRouterModels(ctx)
+                    .sortedBy { id -> OR_PREF.indexOfFirst { id.contains(it) }.let { if (it < 0) 99 else it } }
+                    .take(3).map { Cand("openrouter", it) } +
                 groq.filter { id -> GROQ_EXCLUDE.none { id.contains(it) } }
                     .filter { id -> listOf("kimi-k2", "gpt-oss-120b").any { id.contains(it) } }
                     .sortedBy { id -> GROQ_CHAT_PREF.indexOfFirst { id.contains(it) }.let { if (it < 0) 99 else it } }
@@ -226,6 +244,8 @@ gemini:gemini-2.5-flash
             when (c.provider) {
                 "groq" -> st.groqKey.isNotBlank()
                 "gemini" -> st.geminiKey.isNotBlank()
+                "cloudflare" -> st.cfAccountId.isNotBlank() && st.cfToken.isNotBlank()
+                "openrouter" -> st.openRouterKey.isNotBlank()
                 else -> false
             }
         }.filter { c ->
@@ -372,6 +392,9 @@ object Usage {
     const val GROQ_WHISPER_DAILY_SEC = 28_800.0
 
     /** 今日あと何時間ぶん、Groq で文字起こしできそうか（モデルごとの合計） */
+    fun cloudflareHoursLeft(): Double =
+        (Cloudflare.DAILY_SEC - audioSeconds("cloudflare:${Cloudflare.WHISPER}")).coerceAtLeast(0.0) / 3600.0
+
     fun groqHoursLeft(models: List<String>): Double =
         models.sumOf { m -> (GROQ_WHISPER_DAILY_SEC - audioSeconds("groq:$m")).coerceAtLeast(0.0) } / 3600.0
 }

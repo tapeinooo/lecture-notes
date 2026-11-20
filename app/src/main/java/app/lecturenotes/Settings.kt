@@ -43,6 +43,13 @@ class Settings(context: Context) {
         }
 
     var groqKey by str("groqKey", "")
+
+    /** Cloudflare Workers AI（聞き取りの予備）：アカウントの番号と API トークン */
+    var cfAccountId by str("cfAccountId", "")
+    var cfToken by str("cfToken", "")
+
+    /** OpenRouter（仕上げ・要約の予備。:free のモデル） */
+    var openRouterKey by str("openRouterKey", "")
     var geminiKey by str("geminiKey", "")
 
     /** モデルを自動で選ぶ（一覧を取ってきて役割ごとに順番を付ける） */

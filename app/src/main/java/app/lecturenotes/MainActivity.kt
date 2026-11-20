@@ -1922,6 +1922,24 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
             TextButton(onClick = { uri.openUri("https://console.groq.com/keys") }) { Text("Groq のキーを取る →") }
             KeyField("Gemini の API キー", geminiKey, showKeys) { geminiKey = it; st.geminiKey = it.trim() }
             TextButton(onClick = { uri.openUri("https://aistudio.google.com/apikey") }) { Text("Gemini のキーを取る →") }
+            // 予備（クレジットカードの登録なしで使える無料枠）
+            var cfAcc by remember { mutableStateOf(st.cfAccountId) }
+            var cfTok by remember { mutableStateOf(st.cfToken) }
+            var orKey by remember { mutableStateOf(st.openRouterKey) }
+            Text("予備（なくても動きます）", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp))
+            KeyField("Cloudflare のアカウント ID", cfAcc, true) { cfAcc = it; st.cfAccountId = it.trim() }
+            KeyField("Cloudflare の API トークン（Workers AI）", cfTok, showKeys) { cfTok = it; st.cfToken = it.trim() }
+            TextButton(onClick = { uri.openUri("https://dash.cloudflare.com/profile/api-tokens") }) { Text("Cloudflare のトークンを作る →") }
+            Text(
+                "聞き取りの予備（1日約3.5時間）。トークンは「Workers AI」のひな形で作ります。アカウント ID はダッシュボードの右側に出ています。",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline,
+            )
+            KeyField("OpenRouter の API キー", orKey, showKeys) { orKey = it; st.openRouterKey = it.trim() }
+            TextButton(onClick = { uri.openUri("https://openrouter.ai/keys") }) { Text("OpenRouter のキーを取る →") }
+            Text(
+                "仕上げ・要約の予備（無料のモデルを1日50回）。入れたら「モデルの一覧を取り直す」を押してください。",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline,
+            )
             Text(
                 "※ 無料枠では、送った音声や文章がサービスの改善に使われることがあります。",
                 style = MaterialTheme.typography.bodySmall,
@@ -2244,6 +2262,9 @@ private fun QuotaSummary(st: Settings, @Suppress("UNUSED_PARAMETER") now: Long) 
                 style = MaterialTheme.typography.bodySmall,
             )
         }
+        if (stt.any { it.provider == "cloudflare" }) {
+            Text("そのあと Cloudflare であと約 %.1f 時間ぶん（1日約3.5時間、朝9時に戻る）".format(Usage.cloudflareHoursLeft()), style = MaterialTheme.typography.bodySmall)
+        }
         if (gem.isNotEmpty()) {
             Text(
                 "そのあと Gemini（${gem.size} つ）に回します" + if (tired > 0) "。うち $tired つは今日の上限に達しています" else "",
@@ -2283,7 +2304,7 @@ private fun ModelOrder(st: Settings) {
                 if (m >= 60) "休み（あと${m / 60}時間${m % 60}分）" else "休み（あと${m + 1}分）"
             } else "使える"
             Text(
-                "${i + 1}. ${c.model}（${if (c.provider == "groq") "Groq" else "Gemini"}）　$state・今日 ${Usage.get(c.key)} 回" +
+                "${i + 1}. ${c.model}（${when (c.provider) { "groq" -> "Groq"; "cloudflare" -> "Cloudflare"; "openrouter" -> "OpenRouter"; else -> "Gemini" }}）　$state・今日 ${Usage.get(c.key)} 回" +
                     (if (role == Role.STT && Usage.audioSeconds(c.key) > 0) "・%.1f 時間ぶん".format(Usage.audioSeconds(c.key) / 3600) else "") +
                     (Usage.remainingRequests[c.key]?.let { "・あと $it 回" } ?: "") +
                     (Usage.dailyCap(c.key)?.let { cap -> if (cap == 0) "・無料枠では使えない" else "・1日の上限 約${cap}回" } ?: "") +
@@ -2296,6 +2317,15 @@ private fun ModelOrder(st: Settings) {
 }
 
 private fun testKeys(st: Settings): String = buildString {
+    if (st.cfToken.isNotBlank()) {
+        append("Cloudflare：" + runCatching { Cloudflare.verify(st.cfToken) }.getOrElse { "失敗 ${it.message?.take(120)}" })
+        if (st.cfAccountId.isBlank()) append("（アカウント ID がありません）")
+        append("\n")
+    }
+    if (st.openRouterKey.isNotBlank()) {
+        append("OpenRouter：" + runCatching { "OK（無料のモデル ${OpenRouter.listFreeModels(st.openRouterKey).size}個）" }.getOrElse { "失敗 ${it.message?.take(120)}" })
+        append("\n")
+    }
     if (st.groqKey.isBlank()) {
         append("Groq：キーがありません\n")
     } else {
