@@ -40,4 +40,31 @@ object Dedupe {
         }
         return ""
     }
+
+    /**
+     * text のうち、reference（すでに表示している直前の文章）に含まれている文を取り除く。
+     * 端末内と清書で言い回しが少し違っても（漢字・かな）、7 割以上同じなら同じ文とみなす。
+     */
+    fun dropCovered(text: String, reference: String): String {
+        val ref = norm(reference).takeLast(500)
+        if (ref.isEmpty() || text.isBlank()) return text
+        val pieces = text.split(Regex("(?<=[。！？!?])|\\s+")).map { it.trim() }.filter { it.isNotEmpty() }
+        return pieces.filter { p ->
+            val n = norm(p)
+            n.length < 3 || lcs(n, ref).toDouble() / n.length < 0.7
+        }.joinToString(" ")
+    }
+
+    private fun lcs(a: String, b: String): Int {
+        var prev = IntArray(b.length + 1)
+        var cur = IntArray(b.length + 1)
+        for (i in 1..a.length) {
+            for (j in 1..b.length) {
+                cur[j] = if (a[i - 1] == b[j - 1]) prev[j - 1] + 1 else maxOf(prev[j], cur[j - 1])
+            }
+            val t = prev; prev = cur; cur = t
+            cur.fill(0)
+        }
+        return prev[b.length]
+    }
 }

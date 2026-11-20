@@ -754,7 +754,13 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
                 }
             }
             if (isRec) {
-                item(key = "live") { LiveBlock(live, now) }
+                item(key = "live") {
+                    // 直前の数区間の文章（清書・整形済み・自分で直したもの）
+                    val reference = remember(s) {
+                        s.segments.takeLast(4).filter { it.rawEngine != "local" }.mapNotNull { displayText(it) }.joinToString("")
+                    }
+                    LiveBlock(live, reference)
+                }
             }
             if (rows.isEmpty() && !isRec) {
                 item { Text("まだ録音がありません", color = MaterialTheme.colorScheme.outline, modifier = Modifier.padding(16.dp)) }
@@ -1005,9 +1011,12 @@ private fun LevelBar(modifier: Modifier) {
 
 /** 録音中の、まだ区切られていない部分（端末内の仮の文字を、文章の続きとして薄く出す） */
 @Composable
-private fun LiveBlock(live: Live.State, @Suppress("UNUSED_PARAMETER") now: Long) {
-    // 途中の文字のうち、すでに確定した文と重なる部分は出さない
-    val text = (live.liveText + " " + Dedupe.newPart(live.liveText, live.partial)).trim()
+private fun LiveBlock(live: Live.State, reference: String) {
+    // 途中の文字のうち、すでに確定した文と重なる部分は出さない。
+    // さらに、すでに文章として表示している直前の部分（清書・整形済み）に含まれる文も出さない（遅れて返ってきた文の二重表示を防ぐ）
+    val text = remember(live.liveText, live.partial, reference) {
+        Dedupe.dropCovered((live.liveText + " " + Dedupe.newPart(live.liveText, live.partial)).trim(), reference)
+    }
     Text(
         buildAnnotatedString {
             withStyle(SpanStyle(color = MaterialTheme.colorScheme.error, fontSize = 10.sp)) { append("● ") }

@@ -383,7 +383,11 @@ class RecorderService : Service() {
             }
             // ほとんど音がない区間は文字起こしに送らない
             val silent = frames > 0 && loudFrames * 100 / frames < 2
-            val localResult = if (local?.active == true) synchronized(localText) { localText.toString().trim() } else null
+            // 端末内の仮の文字。直前の区間（清書済み）に含まれる文は除く（遅れて返ってきた文の二重表示を防ぐ）
+            val localResult = if (local?.active == true) synchronized(localText) { localText.toString().trim() }.let { t ->
+                val ref = Repo.get(id)?.segments?.takeLast(3)?.filter { it.rawEngine != "local" }?.mapNotNull { displayText(it) }?.joinToString("") ?: ""
+                Dedupe.dropCovered(t, ref)
+            } else null
             val seg = Segment(
                 index = index,
                 startMs = startMs,
