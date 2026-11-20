@@ -410,15 +410,30 @@ object Processor {
 
     private fun applyFormatted(s: Session, batch: List<Segment>, output: String, c: Cand, polished: Boolean) {
         val list = parseSegments(output) ?: throw IllegalStateException("整形の結果を読めません: ${output.take(120)}")
-        val texts = if (list.size == batch.size) list else {
-            // 数が合わないときは、まとめて最初の区間に入れる
-            listOf(list.joinToString("")) + List(batch.size - 1) { "" }
-        }
+        // 区間の数が合わない結果は、文がずれたり消えたりしているおそれがあるので使わない（次のモデルで試す）
+        if (list.size != batch.size) throw IllegalStateException("整形の結果の区間の数が合いません（${list.size}/${batch.size}）")
+        var rejected = 0
         batch.forEachIndexed { i, g ->
+            val out = list[i].trimEnd().trimStart(' ', '\u3000')
+            val ok = Guard.keepsContent(g.raw ?: "", out)
+            if (!ok) rejected++
             Repo.updateSegment(s.id, g.index) {
                 // 送っている間に文字起こしがやり直されていたら使わない
-                if (it.raw != g.raw || it.edited != null) it else it.copy(formatted = texts[i].trimEnd().trimStart(' ', '\u3000'), formatModel = c.model, polished = polished)
+                if (it.raw != g.raw || it.edited != null) it
+                else if (ok) it.copy(formatted = out, formatModel = c.model, polished = polished)
+                else if (polished) it.copy(polished = true) // 仕上げで文が減った：前の文のまま（仕上げ済みとして、繰り返さない）
+                else {
+                    // すぐの整形で文が減った：2回目までは次の機会にやり直し、それでもだめなら文字起こしのまま
+                    val k = "guard:${s.id}/${g.index}"
+                    val n = (failures[k] ?: 0) + 1
+                    failures[k] = n
+                    if (n >= 2) it.copy(formatted = it.raw, formatModel = "（整形を見送り）") else it
+                }
             }
+        }
+        if (rejected > 0) {
+            val msg = "${c.model} の${if (polished) "仕上げ" else "整形"}で文が減っていた ${rejected} か所は、元の文を残しました"
+            if (polished) polishStatus.value = msg else status.value = msg
         }
     }
 
@@ -593,12 +608,13 @@ ${previousText(s, seg, 200).let { if (it.isEmpty()) "" else "直前に話され�
 規則：
 1. 入力は音声認識の結果を区間ごとに分けた配列です。必ず同じ数・同じ順の配列で返してください。
 2. 話した内容は変えないでください。要約・言い換え・付け足しはしないでください。
-3. 消してよいのは「えー」「あのー」などのつなぎ言葉と、言い直しだけです。
+3. 消してよいのは「えー」「あのー」などのつなぎ言葉と、言い直しだけです。文を丸ごと消すことは絶対にしないでください（同じことの繰り返しに見えても残す）。
+3-2. 聖句の朗読・引用・参照を含む文は、必ず残してください。
 4. 句読点を整え、読みやすくしてください。
 5. 音声認識の誤りと思われる語は、文脈と用語集から正しい語に直してください。
 6. 用語・人名・書名・言い回しは、wol.jw.org（新世界訳聖書 2019年改訂版、ものみの塔出版物）の表記に合わせてください。
 7. 聖句の参照は「ヨハネ 3:16」「テモテ第二 3:1-5」の形にそろえてください（書名は新世界訳の書名）。
-8. 聖句を朗読している部分は、新世界訳の本文の言い回しに合わせて直してかまいません。ただし確信がなければ、聞こえたとおりにしてください。
+8. 聖句を朗読している部分は、聞こえた言葉をそのまま残してください。本文を自分で補ったり、言い換えたり、省いたりしないでください（明らかな聞き間違いの語だけ直す）。
 9. 区間の境目で文が切れていても、そのままにしてください（前後の区間に文を動かさない）。
 10. 段落：話題が変わるところ、聖句の朗読の前後、問いかけの前などで新しい段落にします。新しい段落を始める位置に空行（\n\n）を入れてください（区間の先頭でも途中でもよい）。段落は長くしすぎず、目安は200〜400字です。直前の内容の最後の段落がすでに長ければ、早めに区切ってください。
 11. 利用者が直した語・例があれば、それに従い、同じ書き方にそろえてください。
@@ -632,5 +648,44 @@ ${if (compact) Glossary.forPromptCompact(glossary) else Glossary.forPrompt(gloss
             append("入力：\n")
             append(input)
         }
+    }
+}
+
+/**
+ * 整形・仕上げの結果が、元の文字起こしの中身を残しているかを確かめる。
+ *  - つなぎ言葉・句読点・空白を除いて比べ、元の文字の 6 割以上が順番どおりに残っていること
+ *  - 元に聖句の参照（「ヨハネ 3:16」や「3章16節」）があれば、結果にも参照が残っていること
+ */
+object Guard {
+    private val FILLERS = Regex("えーと|えーっと|えー|ええと|あのー|あの|そのー|まあ|うーん|んー")
+    private val NOISE = Regex("[、。，．,.!！?？「」『』（）()・…ー〜~\\s　\"'“”:：;；]")
+    private val VERSE = Regex("\\d+\\s*[:：章]\\s*\\d+|[０-９]+\\s*[:：章]\\s*[０-９]+")
+
+    private fun norm(t: String) = t.replace(FILLERS, "").replace(NOISE, "")
+
+    fun keepsContent(raw: String, out: String): Boolean {
+        val a = norm(raw)
+        if (a.length < 6) return true // 短すぎるものは比べない
+        val b = norm(out)
+        if (b.isEmpty()) return false
+        if (lcs(a.take(1200), b.take(1500)).toDouble() / a.take(1200).length < 0.6) return false
+        // 聖句の参照が消えていないか（数字の書き方が変わっても「数字:数字」か「章」が残っていればよい）
+        val rawHasVerse = VERSE.containsMatchIn(raw) || Scripture.find(raw).isNotEmpty()
+        if (rawHasVerse && !(VERSE.containsMatchIn(out) || Scripture.find(out).isNotEmpty())) return false
+        return true
+    }
+
+    /** 最長共通部分列の長さ */
+    private fun lcs(a: String, b: String): Int {
+        var prev = IntArray(b.length + 1)
+        var cur = IntArray(b.length + 1)
+        for (i in 1..a.length) {
+            for (j in 1..b.length) {
+                cur[j] = if (a[i - 1] == b[j - 1]) prev[j - 1] + 1 else maxOf(prev[j], cur[j - 1])
+            }
+            val t = prev; prev = cur; cur = t
+            cur.fill(0)
+        }
+        return prev[b.length]
     }
 }
