@@ -116,6 +116,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.em
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -930,8 +931,14 @@ private fun SummaryCard(s: Session) {
         // 【見出し】は太字、聖句は JW Library で開くリンク
         val annotated = remember(sum, cs) {
             buildAnnotatedString {
-                sum.lines().forEachIndexed { li, line ->
-                    if (li > 0) append("\n")
+                sum.lines().map { it.trimEnd() }.filter { it.isNotBlank() }.forEach { line ->
+                    // 「・」の項目は、2行目以降を「・」の後ろの文字にそろえる（ぶら下げの字下げ）
+                    val bullet = line.startsWith("・") || line.startsWith("- ") || line.startsWith("• ")
+                    val para = androidx.compose.ui.text.ParagraphStyle(
+                        textIndent = if (bullet) androidx.compose.ui.text.style.TextIndent(firstLine = 0.sp, restLine = 1.em)
+                        else androidx.compose.ui.text.style.TextIndent.None,
+                    )
+                    pushStyle(para)
                     val start = length
                     val m = Regex("^【([^】]+)】").find(line)
                     if (m != null) {
@@ -945,6 +952,7 @@ private fun SummaryCard(s: Session) {
                         )
                         addStyle(SpanStyle(color = cs.primary, textDecoration = TextDecoration.Underline), start + r.start, start + r.end)
                     }
+                    pop()
                 }
             }
         }
