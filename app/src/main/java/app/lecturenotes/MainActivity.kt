@@ -2392,6 +2392,18 @@ private fun testKeys(st: Settings): String = buildString {
     if (st.openRouterKey.isNotBlank()) {
         append("OpenRouter：" + runCatching { "OK（無料のモデル ${OpenRouter.listFreeModels(st.openRouterKey).size}個）" }.getOrElse { "失敗 ${it.message?.take(120)}" })
         append("\n")
+        // 実際に1回、短い文の整形を頼んでみる（仕上げの順番の最初の OpenRouter のモデル）
+        val m = Catalog.openRouterModels(App.instance).firstOrNull()
+        if (m != null) {
+            append("　試しに整形（$m）：" + runCatching {
+                OpenRouter.chat(
+                    st.openRouterKey, m,
+                    "日本語の文に句読点を付けて、整えた文だけを返してください。",
+                    "えーきょうはエホバについてはなしますそれではみていきましょう", 60_000,
+                ).trim().take(80)
+            }.getOrElse { "失敗 ${it.message?.take(120)}" })
+            append("\n")
+        }
     }
     if (st.groqKey.isBlank()) {
         append("Groq：キーがありません\n")

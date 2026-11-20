@@ -147,10 +147,10 @@ object SoundTest {
         val c = Catalog.candidates(context, st, Role.STT).firstOrNull { it.provider == provider && Cooldown.ok(it.key) }
             ?: return@withContext "（使えるモデルがありません）"
         try {
-            val text = if (provider == "groq") {
-                Groq.transcribe(st.groqKey, c.model, file, Glossary.whisperPrompt(Glossary.load(context)), 40_000)
-            } else {
-                Gemini.transcribe(st.geminiKey, c.model, file, GEMINI_PROMPT, 60_000)
+            val text = when (provider) {
+                "groq" -> Groq.transcribe(st.groqKey, c.model, file, Glossary.whisperPrompt(Glossary.load(context)), 40_000)
+                "cloudflare" -> Cloudflare.transcribe(st.cfAccountId, st.cfToken, file, Glossary.whisperPrompt(Glossary.load(context)), 60_000)
+                else -> Gemini.transcribe(st.geminiKey, c.model, file, GEMINI_PROMPT, 60_000)
             }
             Usage.add(c.key, 10.0)
             text.trim().ifEmpty { "（文字になりませんでした）" }
@@ -215,7 +215,11 @@ fun SoundTestScreen(onBack: () -> Unit) {
                             busy = "文字にしています…"; progress = 1f
                             val g = SoundTest.transcribe(context, "groq", r.file)
                             val m = SoundTest.transcribe(context, "gemini", r.file)
-                            texts = listOf("端末内" to r.localText.ifEmpty { "（文字になりませんでした）" }, "Groq" to g, "Gemini" to m)
+                            val cf = if (st.cfToken.isNotBlank() && st.cfAccountId.isNotBlank()) SoundTest.transcribe(context, "cloudflare", r.file) else null
+                            texts = listOfNotNull(
+                                "端末内" to r.localText.ifEmpty { "（文字になりませんでした）" }, "Groq" to g, "Gemini" to m,
+                                cf?.let { "Cloudflare" to it },
+                            )
                         } catch (e: Exception) {
                             error = e.message ?: "失敗しました"
                         }
