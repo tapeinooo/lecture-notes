@@ -345,7 +345,9 @@ class RecorderService : Service() {
                 rmsSum += rms
                 if (settings.voiceChangeHints) voice.feed(buf, n, rms, startMs + (samples - n) * 1000L / SAMPLE_RATE)
                 if (rms > 120) loudFrames++
-                Live.level.value = (rms * (if (settings.autoGain) gainer.gain else 1.0) / 4000.0).coerceIn(0.0, 1.0).toFloat()
+                // 音の大きさを dB で（-50dB〜0dB を 0〜1 に）。耳の感じ方に近い
+                val outRms = (rms * (if (settings.autoGain) gainer.gain else 1.0)).coerceAtLeast(1.0)
+                Live.level.value = ((20 * kotlin.math.log10(outRms / 32768.0) + 50) / 50).coerceIn(0.0, 1.0).toFloat()
                 // 1秒ごとに、通話などでマイクが取られていないか・無音が続いていないかを見る
                 if (++tick % 10 == 0) {
                     checkMicTaken(rec, audioManager)

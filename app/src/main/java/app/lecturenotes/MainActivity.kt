@@ -1033,12 +1033,11 @@ private fun WritingIcon() {
     }
 }
 
-/** 音の大きさ。ここだけが 0.1 秒ごとに描き直される */
+/** 音の大きさ。ここだけが 0.1 秒ごとに描き直される（省電力モードでは 0.5 秒ごと） */
 @Composable
 private fun LevelBar(modifier: Modifier) {
     val save by Power.save.collectAsState()
     if (save) {
-        // 省電力：0.5 秒ごとに見る
         var level by remember { mutableStateOf(0f) }
         LaunchedEffect(Unit) {
             while (true) {
@@ -1046,10 +1045,39 @@ private fun LevelBar(modifier: Modifier) {
                 delay(500)
             }
         }
-        LinearProgressIndicator(progress = { level }, modifier = modifier)
+        LedMeter(level, modifier)
     } else {
         val level by Live.level.collectAsState()
-        LinearProgressIndicator(progress = { level }, modifier = modifier)
+        LedMeter(level, modifier)
+    }
+}
+
+/** 少しレトロな LED 型の音量計（緑 8・黄 4・赤 2）。点いていない LED はうっすら見える */
+@Composable
+private fun LedMeter(level: Float, modifier: Modifier) {
+    val green = androidx.compose.ui.graphics.Color(0xFF3BD16F)
+    val yellow = androidx.compose.ui.graphics.Color(0xFFF5C431)
+    val red = androidx.compose.ui.graphics.Color(0xFFFF4D4D)
+    val n = 14
+    val lit = kotlin.math.ceil(level * n).toInt()
+    androidx.compose.foundation.Canvas(modifier.height(20.dp)) {
+        val gap = 2.5.dp.toPx()
+        val w = (size.width - gap * (n - 1)) / n
+        val h = 9.dp.toPx()
+        val top = (size.height - h) / 2 // 上下の真ん中
+        for (i in 0 until n) {
+            val c = when {
+                i < 8 -> green
+                i < 12 -> yellow
+                else -> red
+            }
+            drawRoundRect(
+                color = c.copy(alpha = if (i < lit) 1f else 0.13f),
+                topLeft = androidx.compose.ui.geometry.Offset(i * (w + gap), top),
+                size = androidx.compose.ui.geometry.Size(w, h),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(1.dp.toPx()),
+            )
+        }
     }
 }
 
