@@ -95,6 +95,8 @@ object Cooldown {
     fun set(key: String, ms: Long, reason: String) {
         until[key] = System.currentTimeMillis() + ms
         reasons[key] = reason
+        // 1日の上限で長く休むときは、そのときの回数を「1日の上限の目安」として覚える
+        if (ms > 3 * 3600_000L && key.contains(':') && !key.contains('#')) Usage.noteDailyCap(key)
     }
 
     fun clear() {

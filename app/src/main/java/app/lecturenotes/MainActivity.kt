@@ -2172,6 +2172,7 @@ private fun ModelOrder(st: Settings) {
                 "${i + 1}. ${c.model}（${if (c.provider == "groq") "Groq" else "Gemini"}）　$state・今日 ${Usage.get(c.key)} 回" +
                     (if (role == Role.STT && Usage.audioSeconds(c.key) > 0) "・%.1f 時間ぶん".format(Usage.audioSeconds(c.key) / 3600) else "") +
                     (Usage.remainingRequests[c.key]?.let { "・あと $it 回" } ?: "") +
+                    (Usage.dailyCap(c.key)?.let { cap -> if (cap == 0) "・無料枠では使えない" else "・1日の上限 約${cap}回" } ?: "") +
                     (Latency.avgMs(context, role, c)?.let { "・平均 %.1f 秒".format(it / 1000.0) + if (Latency.slow(context, role, c)) "（遅いので後回し）" else "" } ?: ""),
                 style = MaterialTheme.typography.bodySmall,
                 color = if (wait > 0) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.onSurface,

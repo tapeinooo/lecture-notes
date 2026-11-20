@@ -60,8 +60,8 @@ class Settings(context: Context) {
      * すぐの整形のタイミング。
      * 話に長めの間（2秒）があり、たまった音声が fastMinSec 以上なら整形する。間がなくても fastMaxSec たったら整形する。
      */
-    var fastMinSec by int("fastMinSec", 15)
-    var fastMaxSec by int("fastMaxSec", 45)
+    var fastMinSec by int("fastMinSec2", 25)
+    var fastMaxSec by int("fastMaxSec2", 60)
 
     var formatEnabled by bool("formatEnabled", true)
 

@@ -146,11 +146,13 @@ gemini:gemini-2.5-flash
         return GInfo(name, version, tier, unstable, size)
     }
 
+    // 聞き取りの予備（Groq が使えないとき）：1日の回数が多い Flash-Lite を先に。
+    // Flash は無料枠の1日の回数がとても少ない（数回〜20回ほど）ので、仕上げに残す
     private fun sttScore(g: GInfo): Double = when (g.tier) {
         Tier.GEMMA -> -1.0 // 音声を聞けない
-        Tier.FLASH -> g.version * 10 + 5
-        Tier.LITE -> g.version * 10 + 3
-        Tier.PRO -> g.version * 10 + 1
+        Tier.LITE -> 100 + g.version
+        Tier.FLASH -> 50 + g.version
+        Tier.PRO -> g.version
     } - if (g.unstable) 0.5 else 0.0
 
     /**
@@ -166,7 +168,9 @@ gemini:gemini-2.5-flash
 
     /** 仕上げ：頭の良さ優先 */
     private fun polishScore(g: GInfo): Double = when (g.tier) {
-        Tier.GEMMA, Tier.LITE -> -1.0
+        Tier.LITE -> -1.0
+        // Gemma：1日に使える回数がとても多い。大きいもの（20B 以上）だけ、Flash のあとに
+        Tier.GEMMA -> if (g.sizeB >= 20) 5.0 + g.version + g.sizeB / 100.0 else -1.0
         Tier.PRO -> g.version * 10 + 6
         Tier.FLASH -> g.version * 10 + 3
     } - if (g.unstable) 0.5 else 0.0
@@ -194,13 +198,13 @@ gemini:gemini-2.5-flash
                     .take(3).map { Cand("groq", it) }
                 val gemma = gem.filter { it.tier == Tier.GEMMA }.sortedByDescending { fastScore(it) }.take(2)
                     .map { Cand("gemini", it.name) }
-                // Flash-Lite（最大2つ）→ Groq（とても速い）→ Flash → Gemma
+                // Flash-Lite（最大2つ）→ Groq（とても速い）→ Gemma。
+                // Flash（Lite でないもの）は1日の回数がとても少ないので、すぐの整形には使わず仕上げに残す
                 val lite = gm.filter { c -> gem.first { it.name == c.model }.tier == Tier.LITE }.take(2)
-                val flash = gm.filter { c -> gem.first { it.name == c.model }.tier == Tier.FLASH }.take(3)
-                lite + gq + flash + gemma
+                lite + gq + gemma
             }
             // 仕上げ：頭の良い Gemini から。Gemini が今日の上限に達しても止まらないよう、Groq の大きなモデルを後ろに
-            Role.POLISH -> gem.filter { polishScore(it) > 0 }.sortedByDescending { polishScore(it) }.take(5)
+            Role.POLISH -> gem.filter { polishScore(it) > 0 }.sortedByDescending { polishScore(it) }.take(7)
                 .map { Cand("gemini", it.name) } +
                 groq.filter { id -> GROQ_EXCLUDE.none { id.contains(it) } }
                     .filter { id -> listOf("kimi-k2", "gpt-oss-120b").any { id.contains(it) } }
@@ -348,6 +352,20 @@ object Usage {
     fun audioSeconds(key: String): Double {
         rollDay()
         return audioSec[key] ?: 0.0
+    }
+
+    /** モデルが1日の上限に達したときの回数（＝1日の上限の目安）。日をまたいでも覚えておく */
+    @Synchronized
+    fun noteDailyCap(key: String) {
+        val c = app ?: return
+        val n = get(key)
+        c.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putInt("cap:$key", n).apply()
+    }
+
+    fun dailyCap(key: String): Int? {
+        val c = app ?: return null
+        val p = c.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+        return if (p.contains("cap:$key")) p.getInt("cap:$key", 0) else null
     }
 
     /** Groq の Whisper の、1日に文字起こしできる音声の長さの目安（秒）。無料枠の目安 */
