@@ -348,6 +348,18 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
                                     RecDot(blink = true, size = 10.dp)
                                     Spacer(Modifier.width(4.dp))
                                 }
+                                // 完了した話（要約ができていれば 📝 も）
+                                if (s.completed) {
+                                    Text(
+                                        "✓ 完了" + if (s.summary != null) " 📝" else "",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onPrimary,
+                                        modifier = Modifier.background(MaterialTheme.colorScheme.primary, RoundedCornerShape(6.dp))
+                                            .padding(horizontal = 6.dp, vertical = 1.dp),
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                }
                                 Text(
                                     listOfNotNull(
                                         fmtTime(s.startedAt),
