@@ -123,6 +123,9 @@ class Settings(context: Context) {
     /** 無音がこの分数続いたら自動で録音を止める（0 = 止めない） */
     var autoStopMinutes by int("autoStopMinutes", 20)
 
+    /** 設定の画面で最後に開いていたタブ */
+    var settingsTab by int("settingsTab", 0)
+
     /** 要約の形（Summary.Style.key） */
     var summaryStyle by str("summaryStyle", "points")
 

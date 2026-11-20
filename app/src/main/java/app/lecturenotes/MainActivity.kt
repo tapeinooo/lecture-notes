@@ -56,6 +56,8 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -1921,259 +1923,282 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
     var testResult by remember { mutableStateOf("") }
     var updateResult by remember { mutableStateOf("") }
 
+    // タブ：0 よく使う ／ 1 録音と整形（試して調整） ／ 2 AI モデル ／ 3 最初の設定（一度決めたら変えない）
+    var tab by remember { mutableStateOf(st.settingsTab) }
     Column(Modifier.fillMaxSize()) {
         Header("設定", onBack)
+        val tabs = listOf("よく使う", "録音・整形", "AI モデル", "最初の設定")
+        TabRow(selectedTabIndex = tab) {
+            tabs.forEachIndexed { i, t ->
+                Tab(
+                    selected = tab == i,
+                    onClick = { tab = i; st.settingsTab = i },
+                    text = { Text(t, maxLines = 1, fontSize = 13.sp) },
+                )
+            }
+        }
         val scroll = rememberScrollState()
+        LaunchedEffect(tab) { scroll.scrollTo(0) }
         Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(horizontal = 16.dp)) {
-            Section("文字起こしの方法")
-            Mode.entries.forEach { m ->
-                Row(
-                    Modifier.fillMaxWidth().selectable(selected = mode == m, onClick = {
-                        mode = m; st.mode = m; Processor.wake()
-                    }).padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    RadioButton(selected = mode == m, onClick = null)
-                    Column(Modifier.padding(start = 8.dp)) {
-                        Text(m.label)
-                        Text(m.help, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+            when (tab) {
+                0 -> {
+                Section("文字起こしの方法")
+                Mode.entries.forEach { m ->
+                    Row(
+                        Modifier.fillMaxWidth().selectable(selected = mode == m, onClick = {
+                            mode = m; st.mode = m; Processor.wake()
+                        }).padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = mode == m, onClick = null)
+                        Column(Modifier.padding(start = 8.dp)) {
+                            Text(m.label)
+                            Text(m.help, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                        }
                     }
                 }
-            }
-            Spacer(Modifier.height(4.dp))
-            OutlinedButton(onClick = { testResult = LocalRecognizer.prepareModel(context) }) { Text("端末内の日本語モデルを準備") }
-
-            Section("API キー（無料で取れます）")
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(checked = showKeys, onCheckedChange = { showKeys = it })
-                Text("キーを表示", Modifier.padding(start = 8.dp))
-            }
-            KeyField("Groq の API キー", groqKey, showKeys) { groqKey = it; st.groqKey = it.trim() }
-            TextButton(onClick = { uri.openUri("https://console.groq.com/keys") }) { Text("Groq のキーを取る →") }
-            KeyField("Gemini の API キー", geminiKey, showKeys) { geminiKey = it; st.geminiKey = it.trim() }
-            TextButton(onClick = { uri.openUri("https://aistudio.google.com/apikey") }) { Text("Gemini のキーを取る →") }
-            // 予備（クレジットカードの登録なしで使える無料枠）
-            var cfAcc by remember { mutableStateOf(st.cfAccountId) }
-            var cfTok by remember { mutableStateOf(st.cfToken) }
-            var orKey by remember { mutableStateOf(st.openRouterKey) }
-            Text("予備（なくても動きます）", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp))
-            KeyField("Cloudflare のアカウント ID", cfAcc, true) { cfAcc = it; st.cfAccountId = it.trim() }
-            KeyField("Cloudflare の API トークン（Workers AI）", cfTok, showKeys) { cfTok = it; st.cfToken = it.trim() }
-            TextButton(onClick = { uri.openUri("https://dash.cloudflare.com/profile/api-tokens") }) { Text("Cloudflare のトークンを作る →") }
-            Text(
-                "聞き取りの予備（1日約3.5時間）。トークンは「Workers AI」のひな形で作ります。アカウント ID はダッシュボードの右側に出ています。",
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline,
-            )
-            KeyField("OpenRouter の API キー", orKey, showKeys) { orKey = it; st.openRouterKey = it.trim() }
-            TextButton(onClick = { uri.openUri("https://openrouter.ai/keys") }) { Text("OpenRouter のキーを取る →") }
-            Text(
-                "仕上げ・要約の予備（無料のモデルを1日50回）。入れたら「モデルの一覧を取り直す」を押してください。",
-                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline,
-            )
-            Text(
-                "※ 無料枠では、送った音声や文章がサービスの改善に使われることがあります。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.outline,
-            )
-            Spacer(Modifier.height(4.dp))
-            OutlinedButton(onClick = {
-                scope.launch {
-                    testResult = "確かめています…"
-                    testResult = withContext(Dispatchers.IO) { testKeys(st) }
-                    Cooldown.clear()
-                    Processor.wake()
+                Section("整形")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = formatOn, onCheckedChange = { formatOn = it; st.formatEnabled = it; Processor.wake() })
+                    Text("AI で整形する", Modifier.padding(start = 8.dp))
                 }
-            }) { Text("つながるか確かめる（使えるモデルも表示）") }
-            if (testResult.isNotEmpty()) Text(testResult, style = MaterialTheme.typography.bodySmall)
-
-            Section("モデル")
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(checked = autoModels, onCheckedChange = { autoModels = it; st.autoModels = it; Processor.wake() })
-                Text("自動で選ぶ（おすすめ）", Modifier.padding(start = 8.dp))
-            }
-            Text(
-                "使えるモデルの一覧を取ってきて、聞き取りは「速くて回数が多いもの」、整形は「頭の良いもの」から順に使います。" +
-                    "制限にかかったら次のモデルへ、制限が戻ればまた上のモデルへ戻ります。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.outline,
-            )
-            OutlinedButton(onClick = {
-                scope.launch {
-                    catalogMsg = "取っています…"
-                    catalogMsg = withContext(Dispatchers.IO) { Catalog.refresh(context, st) }
-                    tick++
-                }
-            }) { Text("モデルの一覧を取り直す") }
-            if (catalogMsg.isNotEmpty()) Text(catalogMsg, style = MaterialTheme.typography.bodySmall)
-            if (!autoModels) {
-                Text("1行に「groq:モデル名」か「gemini:モデル名」。上から使います。", style = MaterialTheme.typography.bodySmall)
-                OutlinedTextField(
-                    value = manualStt, onValueChange = { manualStt = it; st.manualStt = it },
-                    label = { Text(Role.STT.label) }, modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                Text(
+                    "清書（クラウドの文字起こし）が来たら、速いモデルですぐ整形し、あとから頭の良いモデルで仕上げ直します。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
                 )
-                OutlinedTextField(
-                    value = manualFormat, onValueChange = { manualFormat = it; st.manualFormat = it },
-                    label = { Text(Role.FAST.label) }, modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = polishOn, onCheckedChange = { polishOn = it; st.polishEnabled = it; Processor.wake() })
+                    Text("頭の良いモデルで仕上げ直す", Modifier.padding(start = 8.dp))
+                }
+                Section("その場の表示")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = liveOn, onCheckedChange = { liveOn = it; st.livePreview = it })
+                    Text("端末内の音声認識で、その場で文字を出す", Modifier.padding(start = 8.dp))
+                }
+                Text(
+                    "話した直後に文字が出ます（Android 13 以上）。区切りごとにクラウドの清書で置き換わります。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
                 )
-                OutlinedTextField(
-                    value = manualPolish, onValueChange = { manualPolish = it; st.manualPolish = it },
-                    label = { Text(Role.POLISH.label) }, modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                Section("要約の形")
+                Text("話を「✓ 完了」にすると、仕上げのあとに頭の良い AI がこの形で要約を作ります。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                var sumStyle by remember { mutableStateOf(st.summaryStyle) }
+                Summary.Style.entries.forEach { sty ->
+                    Row(
+                        Modifier.fillMaxWidth().selectable(selected = sumStyle == sty.key, onClick = { sumStyle = sty.key; st.summaryStyle = sty.key })
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = sumStyle == sty.key, onClick = null)
+                        Column(Modifier.padding(start = 8.dp)) {
+                            Text(sty.label)
+                            Text(sty.help, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                        }
+                    }
+                }
+                Section("電池")
+                var saveOn by remember { mutableStateOf(st.powerSave) }
+                var dimOn by remember { mutableStateOf(st.dimScreen) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = saveOn, onCheckedChange = { saveOn = it; st.powerSave = it })
+                    Text("省電力モード（真っ黒の画面・動きを減らす）", Modifier.padding(start = 8.dp))
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = dimOn, onCheckedChange = { dimOn = it; st.dimScreen = it })
+                    Text("アプリの中だけ画面を暗くする", Modifier.padding(start = 8.dp))
+                }
+                }
+                1 -> {
+                Section("録音")
+                Text("マイクの取り方（「🎤 音のテスト」で比べて自動で選べます）", style = MaterialTheme.typography.bodySmall)
+                var mic by remember { mutableStateOf(st.micSource) }
+                MicSource.available(context).forEach { m ->
+                    Row(
+                        Modifier.fillMaxWidth().selectable(selected = mic == m.key, onClick = { mic = m.key; st.micSource = m.key })
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = mic == m.key, onClick = null)
+                        Column(Modifier.padding(start = 8.dp)) {
+                            Text(m.label)
+                            Text(m.help, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                        }
+                    }
+                }
+                var gainOn by remember { mutableStateOf(st.autoGain) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = gainOn, onCheckedChange = { gainOn = it; st.autoGain = it })
+                    Text("小さい音を自動で大きくする（割れない範囲で）", Modifier.padding(start = 8.dp))
+                }
+                Text("録音中に変えたときは、次に録音を始めたときから効きます。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                var noText by remember { mutableStateOf(st.noTextStopMinutes.toString()) }
+                Field("文章にならない音が何分続いたら止めるか（0 = 止めない）", noText, KeyboardType.Number) {
+                    noText = it; it.toIntOrNull()?.let { v -> st.noTextStopMinutes = v.coerceIn(0, 240) }
+                }
+                var autoStop by remember { mutableStateOf(st.autoStopMinutes.toString()) }
+                Field("無音が何分続いたら自動で止めるか（0 = 止めない）", autoStop, KeyboardType.Number) {
+                    autoStop = it; it.toIntOrNull()?.let { v -> st.autoStopMinutes = v.coerceIn(0, 240) }
+                }
+                Text(
+                    "ほかの記録で録音を始めたときも、前の録音は自動で止めます。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
                 )
-            }
-            key(tick, autoModels, mode, groqKey, geminiKey) {
-                ModelOrder(st)
-            }
-
-            Section("整形")
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(checked = formatOn, onCheckedChange = { formatOn = it; st.formatEnabled = it; Processor.wake() })
-                Text("AI で整形する", Modifier.padding(start = 8.dp))
-            }
-            Text(
-                "清書（クラウドの文字起こし）が来たら、速いモデルですぐ整形し、あとから頭の良いモデルで仕上げ直します。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.outline,
-            )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(checked = polishOn, onCheckedChange = { polishOn = it; st.polishEnabled = it; Processor.wake() })
-                Text("頭の良いモデルで仕上げ直す", Modifier.padding(start = 8.dp))
-            }
-            Text(
-                "すぐの整形は、話に長めの間（2秒ほど）があったときに、たまった分をまとめて行います。間がなくても決まった秒数たてば行います。" +
-                    "まとめるほど呼び出しの回数とトークンが減り、無料枠が長持ちします。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.outline,
-            )
-            Field("間で整形するのは、たまった音声が何秒以上のとき", fastMin, KeyboardType.Number) {
-                fastMin = it; it.toIntOrNull()?.let { v -> st.fastMinSec = v.coerceIn(5, 120) }
-            }
-            Field("間がなくても整形するまでの秒数", fastMax, KeyboardType.Number) {
-                fastMax = it; it.toIntOrNull()?.let { v -> st.fastMaxSec = v.coerceIn(15, 180) }
-            }
-
-            Section("その場の表示")
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(checked = liveOn, onCheckedChange = { liveOn = it; st.livePreview = it })
-                Text("端末内の音声認識で、その場で文字を出す", Modifier.padding(start = 8.dp))
-            }
-            Text(
-                "話した直後に文字が出ます（Android 13 以上）。区切りごとにクラウドの清書で置き換わります。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.outline,
-            )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(checked = voiceOn, onCheckedChange = { voiceOn = it; st.voiceChangeHints = it })
-                Text("声の変わり目を、段落を区切る参考にする", Modifier.padding(start = 8.dp))
-            }
-            Text(
-                "端末の中で声の高さと響きを比べ、話し手が替わったらしいところを AI に伝えます（ネット・無料枠は使いません）。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.outline,
-            )
-            Field("清書に送る区切りの目安（秒・10〜120）", chunk, KeyboardType.Number) {
-                chunk = it; it.toIntOrNull()?.let { v -> st.chunkSeconds = v.coerceIn(10, 120) }
-            }
-            Text(
-                "10秒を過ぎたら文の切れ目（0.6秒ほどの間）で区切り、目安を過ぎたら少しでも静かなところで区切ります。短いほど清書が早く出ますが、無料枠の回数を多く使います。録音中に変えても、次の区切りから効きます。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.outline,
-            )
-            OutlinedButton(onClick = onGlossary) { Text("用語集を編集する") }
-
-            Section("Google ドライブに控え")
-            DriveBackupSettings()
-
-            Section("ラベルと話し手")
-            LabelSpeakerSettings()
-
-            Section("録音")
-            Text("マイクの取り方（「🎤 音のテスト」で比べて自動で選べます）", style = MaterialTheme.typography.bodySmall)
-            var mic by remember { mutableStateOf(st.micSource) }
-            MicSource.available(context).forEach { m ->
-                Row(
-                    Modifier.fillMaxWidth().selectable(selected = mic == m.key, onClick = { mic = m.key; st.micSource = m.key })
-                        .padding(vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    RadioButton(selected = mic == m.key, onClick = null)
-                    Column(Modifier.padding(start = 8.dp)) {
-                        Text(m.label)
-                        Text(m.help, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                    Section("清書に送る区切り")
+                Field("清書に送る区切りの目安（秒・10〜120）", chunk, KeyboardType.Number) {
+                    chunk = it; it.toIntOrNull()?.let { v -> st.chunkSeconds = v.coerceIn(10, 120) }
+                }
+                Text(
+                    "10秒を過ぎたら文の切れ目（0.6秒ほどの間）で区切り、目安を過ぎたら少しでも静かなところで区切ります。短いほど清書が早く出ますが、無料枠の回数を多く使います。録音中に変えても、次の区切りから効きます。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+                    Section("すぐの整形の間隔")
+                Text(
+                    "すぐの整形は、話に長めの間（2秒ほど）があったときに、たまった分をまとめて行います。間がなくても決まった秒数たてば行います。" +
+                        "まとめるほど呼び出しの回数とトークンが減り、無料枠が長持ちします。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+                Field("間で整形するのは、たまった音声が何秒以上のとき", fastMin, KeyboardType.Number) {
+                    fastMin = it; it.toIntOrNull()?.let { v -> st.fastMinSec = v.coerceIn(5, 120) }
+                }
+                Field("間がなくても整形するまでの秒数", fastMax, KeyboardType.Number) {
+                    fastMax = it; it.toIntOrNull()?.let { v -> st.fastMaxSec = v.coerceIn(15, 180) }
+                }
+                    Section("段落の区切り")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = voiceOn, onCheckedChange = { voiceOn = it; st.voiceChangeHints = it })
+                    Text("声の変わり目を、段落を区切る参考にする", Modifier.padding(start = 8.dp))
+                }
+                Text(
+                    "端末の中で声の高さと響きを比べ、話し手が替わったらしいところを AI に伝えます（ネット・無料枠は使いません）。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+                    Section("端末内の音声認識")
+                Spacer(Modifier.height(4.dp))
+                OutlinedButton(onClick = { testResult = LocalRecognizer.prepareModel(context) }) { Text("端末内の日本語モデルを準備") }
+                    if (testResult.isNotEmpty()) Text(testResult, style = MaterialTheme.typography.bodySmall)
+                }
+                2 -> {
+                Section("モデル")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = autoModels, onCheckedChange = { autoModels = it; st.autoModels = it; Processor.wake() })
+                    Text("自動で選ぶ（おすすめ）", Modifier.padding(start = 8.dp))
+                }
+                Text(
+                    "使えるモデルの一覧を取ってきて、聞き取りは「速くて回数が多いもの」、整形は「頭の良いもの」から順に使います。" +
+                        "制限にかかったら次のモデルへ、制限が戻ればまた上のモデルへ戻ります。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+                OutlinedButton(onClick = {
+                    scope.launch {
+                        catalogMsg = "取っています…"
+                        catalogMsg = withContext(Dispatchers.IO) { Catalog.refresh(context, st) }
+                        tick++
                     }
+                }) { Text("モデルの一覧を取り直す") }
+                if (catalogMsg.isNotEmpty()) Text(catalogMsg, style = MaterialTheme.typography.bodySmall)
+                if (!autoModels) {
+                    Text("1行に「groq:モデル名」か「gemini:モデル名」。上から使います。", style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(
+                        value = manualStt, onValueChange = { manualStt = it; st.manualStt = it },
+                        label = { Text(Role.STT.label) }, modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    )
+                    OutlinedTextField(
+                        value = manualFormat, onValueChange = { manualFormat = it; st.manualFormat = it },
+                        label = { Text(Role.FAST.label) }, modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    )
+                    OutlinedTextField(
+                        value = manualPolish, onValueChange = { manualPolish = it; st.manualPolish = it },
+                        label = { Text(Role.POLISH.label) }, modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    )
+                }
+                key(tick, autoModels, mode, groqKey, geminiKey) {
+                    ModelOrder(st)
+                }
+                }
+                else -> {
+                Section("API キー（無料で取れます）")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = showKeys, onCheckedChange = { showKeys = it })
+                    Text("キーを表示", Modifier.padding(start = 8.dp))
+                }
+                KeyField("Groq の API キー", groqKey, showKeys) { groqKey = it; st.groqKey = it.trim() }
+                TextButton(onClick = { uri.openUri("https://console.groq.com/keys") }) { Text("Groq のキーを取る →") }
+                KeyField("Gemini の API キー", geminiKey, showKeys) { geminiKey = it; st.geminiKey = it.trim() }
+                TextButton(onClick = { uri.openUri("https://aistudio.google.com/apikey") }) { Text("Gemini のキーを取る →") }
+                // 予備（クレジットカードの登録なしで使える無料枠）
+                var cfAcc by remember { mutableStateOf(st.cfAccountId) }
+                var cfTok by remember { mutableStateOf(st.cfToken) }
+                var orKey by remember { mutableStateOf(st.openRouterKey) }
+                Text("予備（なくても動きます）", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 8.dp))
+                KeyField("Cloudflare のアカウント ID", cfAcc, true) { cfAcc = it; st.cfAccountId = it.trim() }
+                KeyField("Cloudflare の API トークン（Workers AI）", cfTok, showKeys) { cfTok = it; st.cfToken = it.trim() }
+                TextButton(onClick = { uri.openUri("https://dash.cloudflare.com/profile/api-tokens") }) { Text("Cloudflare のトークンを作る →") }
+                Text(
+                    "聞き取りの予備（1日約3.5時間）。トークンは「Workers AI」のひな形で作ります。アカウント ID はダッシュボードの右側に出ています。",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline,
+                )
+                KeyField("OpenRouter の API キー", orKey, showKeys) { orKey = it; st.openRouterKey = it.trim() }
+                TextButton(onClick = { uri.openUri("https://openrouter.ai/keys") }) { Text("OpenRouter のキーを取る →") }
+                Text(
+                    "仕上げ・要約の予備（無料のモデルを1日50回）。入れたら「モデルの一覧を取り直す」を押してください。",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline,
+                )
+                Text(
+                    "※ 無料枠では、送った音声や文章がサービスの改善に使われることがあります。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+                Spacer(Modifier.height(4.dp))
+                OutlinedButton(onClick = {
+                    scope.launch {
+                        testResult = "確かめています…"
+                        testResult = withContext(Dispatchers.IO) { testKeys(st) }
+                        Cooldown.clear()
+                        Processor.wake()
+                    }
+                }) { Text("つながるか確かめる（使えるモデルも表示）") }
+                if (testResult.isNotEmpty()) Text(testResult, style = MaterialTheme.typography.bodySmall)
+
+                    Section("用語集")
+                OutlinedButton(onClick = onGlossary) { Text("用語集を編集する") }
+
+                Section("Google ドライブに控え")
+                DriveBackupSettings()
+
+                Section("ラベルと話し手")
+                LabelSpeakerSettings()
+
+                Section("その他")
+                OutlinedButton(onClick = {
+                    context.startActivity(Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                }) { Text("電池の最適化の設定を開く") }
+                Text(
+                    "長時間の録音が止まらないよう、「たっぴぃず録音」を最適化しない（制限なし）にしておくと安心です。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(onClick = {
+                    scope.launch {
+                        updateResult = "確かめています…"
+                        updateResult = withContext(Dispatchers.IO) { Updater.check() }
+                        // 新しい版があれば、「更新する」ボタン（いちばん下）までスクロール
+                        if (Updater.available.value != null) {
+                            delay(100)
+                            scroll.animateScrollTo(scroll.maxValue)
+                        }
+                    }
+                }) { Text("更新を確かめる（いま ${BuildConfig.VERSION_NAME}）") }
+                if (updateResult.isNotEmpty()) Text(updateResult, style = MaterialTheme.typography.bodySmall)
+                UpdateBanner()
                 }
             }
-            var gainOn by remember { mutableStateOf(st.autoGain) }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(checked = gainOn, onCheckedChange = { gainOn = it; st.autoGain = it })
-                Text("小さい音を自動で大きくする（割れない範囲で）", Modifier.padding(start = 8.dp))
-            }
-            Text("録音中に変えたときは、次に録音を始めたときから効きます。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
-            var noText by remember { mutableStateOf(st.noTextStopMinutes.toString()) }
-            Field("文章にならない音が何分続いたら止めるか（0 = 止めない）", noText, KeyboardType.Number) {
-                noText = it; it.toIntOrNull()?.let { v -> st.noTextStopMinutes = v.coerceIn(0, 240) }
-            }
-            var autoStop by remember { mutableStateOf(st.autoStopMinutes.toString()) }
-            Field("無音が何分続いたら自動で止めるか（0 = 止めない）", autoStop, KeyboardType.Number) {
-                autoStop = it; it.toIntOrNull()?.let { v -> st.autoStopMinutes = v.coerceIn(0, 240) }
-            }
-            Text(
-                "ほかの記録で録音を始めたときも、前の録音は自動で止めます。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.outline,
-            )
-
-            Section("要約の形")
-            Text("話を「✓ 完了」にすると、仕上げのあとに頭の良い AI がこの形で要約を作ります。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
-            var sumStyle by remember { mutableStateOf(st.summaryStyle) }
-            Summary.Style.entries.forEach { sty ->
-                Row(
-                    Modifier.fillMaxWidth().selectable(selected = sumStyle == sty.key, onClick = { sumStyle = sty.key; st.summaryStyle = sty.key })
-                        .padding(vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    RadioButton(selected = sumStyle == sty.key, onClick = null)
-                    Column(Modifier.padding(start = 8.dp)) {
-                        Text(sty.label)
-                        Text(sty.help, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
-                    }
-                }
-            }
-
-            Section("電池")
-            var saveOn by remember { mutableStateOf(st.powerSave) }
-            var dimOn by remember { mutableStateOf(st.dimScreen) }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(checked = saveOn, onCheckedChange = { saveOn = it; st.powerSave = it })
-                Text("省電力モード（真っ黒の画面・動きを減らす）", Modifier.padding(start = 8.dp))
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(checked = dimOn, onCheckedChange = { dimOn = it; st.dimScreen = it })
-                Text("アプリの中だけ画面を暗くする", Modifier.padding(start = 8.dp))
-            }
-
-            Section("その他")
-            OutlinedButton(onClick = {
-                context.startActivity(Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-            }) { Text("電池の最適化の設定を開く") }
-            Text(
-                "長時間の録音が止まらないよう、「たっぴぃず録音」を最適化しない（制限なし）にしておくと安心です。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.outline,
-            )
-            Spacer(Modifier.height(8.dp))
-            OutlinedButton(onClick = {
-                scope.launch {
-                    updateResult = "確かめています…"
-                    updateResult = withContext(Dispatchers.IO) { Updater.check() }
-                    // 新しい版があれば、「更新する」ボタン（いちばん下）までスクロール
-                    if (Updater.available.value != null) {
-                        delay(100)
-                        scroll.animateScrollTo(scroll.maxValue)
-                    }
-                }
-            }) { Text("更新を確かめる（いま ${BuildConfig.VERSION_NAME}）") }
-            if (updateResult.isNotEmpty()) Text(updateResult, style = MaterialTheme.typography.bodySmall)
-            UpdateBanner()
             Spacer(Modifier.height(32.dp))
         }
     }
