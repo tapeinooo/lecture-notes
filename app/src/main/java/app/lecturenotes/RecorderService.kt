@@ -227,7 +227,8 @@ class RecorderService : Service() {
     private fun stopLocal() {
         local?.stop()
         local = null
-        Live.state.update { it.copy(partial = "") }
+        // 止めたときは、残っている仮の文字も消す（古い文字が下に残らないように）
+        Live.state.update { it.copy(partial = "", liveText = "") }
     }
 
     private var lastWarning: String? = null

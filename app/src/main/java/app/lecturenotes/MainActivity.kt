@@ -125,6 +125,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.input.pointer.positionChange
@@ -585,7 +586,11 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
     var busy by remember { mutableStateOf<String?>(null) }
 
     var learned by remember { mutableStateOf<Pair<Int, List<Corrections.Fix>>?>(null) }
-    val rows = remember(s) { Transcript.paragraphs(s) }
+    val liveRows = remember(s) { Transcript.paragraphs(s) }
+    // 直している間は、文章の表示を止める（AI の整形で上の段落が組み替わって、直している場所がずれないように）
+    var frozenRows by remember { mutableStateOf<List<Transcript.Para>?>(null) }
+    LaunchedEffect(editState == null) { frozenRows = if (editState != null) liveRows else null }
+    val rows = frozenRows ?: liveRows
     // 段落ごとの変わらない名前（上の段落が増えても、下の段落の状態がずれないように）
     val rowKeys = remember(rows) {
         val seen = HashMap<Int, Int>()
@@ -598,16 +603,16 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
     }
 
     val listState = rememberLazyListState()
-    val atBottom by remember {
-        derivedStateOf {
-            val info = listState.layoutInfo
-            val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
-            last >= info.totalItemsCount - 2
-        }
+    // いちばん下について行くか。自分で上へスクロールしたら止め、いちばん下まで戻ったらまたついて行く
+    var following by remember { mutableStateOf(true) }
+    LaunchedEffect(listState.isScrollInProgress) {
+        if (!listState.isScrollInProgress) following = !listState.canScrollForward
     }
-    LaunchedEffect(rows.size, live.partial, live.liveText) {
-        if (isRec && atBottom && editing == null && listState.layoutInfo.totalItemsCount > 0) {
-            listState.scrollToItem(listState.layoutInfo.totalItemsCount - 1)
+    // 中身が変わったら（段落の数が同じでも、文が足されたら）いちばん下へ
+    val contentVersion = rows.sumOf { it.text.length } + rows.size * 7 + live.liveText.length + live.partial.length
+    LaunchedEffect(contentVersion) {
+        if (isRec && following && editing == null && listState.layoutInfo.totalItemsCount > 0) {
+            listState.scrollToItem(listState.layoutInfo.totalItemsCount - 1, Int.MAX_VALUE / 4)
         }
     }
 
@@ -715,11 +720,14 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
         HorizontalDivider()
 
         // キーボードが出て見える範囲が変わったら、カーソルの行を真ん中へ
-        LaunchedEffect(editing?.first, listHeight) {
+        // キーボードが出たら1回だけ、カーソルの行を真ん中へ（ほかのことで高さが変わっても動かさない）
+        val imeVisible = androidx.compose.foundation.layout.WindowInsets.isImeVisible
+        LaunchedEffect(editing?.first, imeVisible) {
             if (editing == null) return@LaunchedEffect
-            delay(200)
+            delay(if (imeVisible) 350 else 150)
             val y = editCursorY ?: return@LaunchedEffect
-            listState.animateScrollBy(y - (listTop + listHeight / 2))
+            val delta = y - (listTop + listHeight / 2)
+            if (kotlin.math.abs(delta) > 24) listState.animateScrollBy(delta)
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
         LazyColumn(
@@ -753,6 +761,19 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
             }
         }
         Scrollbar(listState, Modifier.align(Alignment.CenterEnd))
+        // 上へ戻って読んでいるとき、最新（いちばん下）へ戻るボタン
+        if (isRec && !following && editing == null) {
+            Button(
+                onClick = {
+                    following = true
+                    scope.launch {
+                        listState.scrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0), Int.MAX_VALUE / 4)
+                    }
+                },
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
+            ) { Text("⬇ 最新へ") }
+        }
         }
 
         HorizontalDivider()
@@ -767,10 +788,15 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth().clickable { detail = !detail },
             ) {
+                // いつも1行に収める（長いときは「…」で切る。高さが変わって画面が揺れないように）
                 if (working.isNotEmpty()) {
                     WritingIcon()
                     Spacer(Modifier.width(6.dp))
-                    Text(working.joinToString("・"), style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        working.joinToString("・"), style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
                     Spacer(Modifier.width(8.dp))
                 }
                 val waits = listOfNotNull(
@@ -780,13 +806,14 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
                 )
                 Text(
                     when {
-                        waits.isNotEmpty() -> "待ち：" + waits.joinToString("・")
+                        waits.isNotEmpty() -> "待ち " + waits.joinToString("・")
                         working.isEmpty() -> "✓ すべて済み"
                         else -> ""
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.outline,
-                    modifier = Modifier.weight(1f),
+                    maxLines = 1, softWrap = false,
+                    modifier = if (working.isEmpty()) Modifier.weight(1f) else Modifier,
                 )
                 Text(if (detail) "▾" else "▸", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
             }
