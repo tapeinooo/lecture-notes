@@ -5,7 +5,8 @@ package app.lecturenotes
  * 例：「王国界館に集まり」→「王国会館に集まり」から「界館→会館」ではなく、前後を少し含めた「王国界館→王国会館」を取る。
  */
 object Corrections {
-    data class Fix(val from: String, val to: String) {
+    /** start / end：直した後の文の中での、to の位置 */
+    data class Fix(val from: String, val to: String, val start: Int = -1, val end: Int = -1) {
         override fun toString() = "$from→$to"
     }
 
@@ -55,7 +56,7 @@ object Corrections {
                 r++; rb++
                 from = a.substring(l, r); to = b.substring(lb, rb)
             }
-            if (from.length in 1..20 && to.length in 1..20) fixes.add(Fix(from.trim(), to.trim()))
+            if (from.length in 1..20 && to.length in 1..20) fixes.add(Fix(from.trim(), to.trim(), lb, rb))
         }
         return fixes.filter { it.from.isNotEmpty() && it.to.isNotEmpty() && it.from != it.to }.distinct()
     }
@@ -83,6 +84,43 @@ object Corrections {
                 }
             })
         }
+    }
+}
+
+/**
+ * 直したところから、用語集に足すとよさそうな「単語」を取り出す（「誤→正」の組ではなく、正しい単語だけ）。
+ * 直した部分の前後を、漢字・カタカナ・英数字が続く間だけ広げて1語にし、端の助詞（の・を・に…）を落とす。
+ * すでに用語集にある単語は出さない。
+ */
+object WordSuggest {
+    private fun isWordChar(c: Char) =
+        c in '一'..'龥' || c == '々' || c in 'ァ'..'ヶ' || c == 'ー' || c.isLetterOrDigit() && c.code < 0x3000
+
+    private val PARTICLES = "のをにはがでとへもやね"
+
+    fun words(context: android.content.Context, after: String, fixes: List<Corrections.Fix>): List<String> {
+        val have = Glossary.terms(Glossary.load(context)).toSet()
+        val out = LinkedHashSet<String>()
+        for (f in fixes) {
+            if (f.start < 0 || f.end > after.length || f.start >= f.end) continue
+            var a = f.start
+            var b = f.end
+            // 先に、直した部分の端の助詞を落としてから広げる（「聖なる力の」→「聖なる力」）
+            while (a < b && PARTICLES.indexOf(after[b - 1]) >= 0) b--
+            while (a < b && PARTICLES.indexOf(after[a]) >= 0) a++
+            if (a >= b) continue
+            while (a > 0 && isWordChar(after[a - 1])) a--
+            while (b < after.length && isWordChar(after[b])) b++
+            var w = after.substring(a, b).trim()
+            while (w.isNotEmpty() && PARTICLES.indexOf(w.last()) >= 0) w = w.dropLast(1)
+            while (w.isNotEmpty() && PARTICLES.indexOf(w.first()) >= 0) w = w.drop(1)
+            w = w.trim('、', '。', '「', '」', ' ', '　')
+            // ひらがなだけの語（言い回し）や、長すぎる・短すぎるものは出さない
+            if (w.length !in 2..16 || w.all { it in 'ぁ'..'ゖ' }) continue
+            if (w in have) continue
+            out.add(w)
+        }
+        return out.toList()
     }
 }
 

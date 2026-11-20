@@ -1536,7 +1536,6 @@ private fun InlineEditor(
             val fixes = Corrections.extract(before, edit)
             Repo.updateSegment(s.id, g.index) { it.copy(edited = edit) }
             if (fixes.isNotEmpty()) {
-                Repo.update(s.id) { ss -> ss.copy(corrections = (ss.corrections + fixes.map { it.toString() }).distinct()) }
                 onLearned(fixes)
             }
             Processor.wake()
@@ -1713,27 +1712,41 @@ private fun EmojiBtn(emoji: String, desc: String, enabled: Boolean = true, onCli
 @Composable
 private fun LearnedBar(s: Session, segIndex: Int, fixes: List<Corrections.Fix>, onClose: () -> Unit) {
     val context = LocalContext.current
+    // 直した後の文（単語を取り出すため）
+    val after = remember(fixes) { s.segments.firstOrNull { it.index == segIndex }?.let { displayText(it) } ?: "" }
+    val words = remember(fixes) { WordSuggest.words(context, after, fixes) }
     val others = remember(fixes) { Corrections.countOthers(s, segIndex, fixes) }
-    var addedGlossary by remember(fixes) { mutableStateOf(false) }
+    var added by remember(fixes) { mutableStateOf(setOf<String>()) }
     var fixedOthers by remember(fixes) { mutableStateOf(false) }
+    // 足す単語も、ほかに直すところもなければ出さない
+    if (words.isEmpty() && others == 0) {
+        LaunchedEffect(fixes) { onClose() }
+        return
+    }
     Column(
         Modifier.fillMaxWidth().padding(vertical = 4.dp)
             .background(MaterialTheme.colorScheme.tertiaryContainer, RoundedCornerShape(8.dp))
             .padding(horizontal = 8.dp, vertical = 4.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("💡 ${fixes.joinToString("、")}", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+            Text(
+                if (words.isNotEmpty()) "💡 用語集に足しますか？（押すと足します）" else "💡 同じところがほかにもあります",
+                style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f),
+            )
             IconBtn(Icons.Default.Close, "閉じる") { onClose() }
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            AssistChip(
-                onClick = {
-                    Glossary.append(context, fixes.map { it.toString() }, "直したところから")
-                    addedGlossary = true
-                },
-                enabled = !addedGlossary,
-                label = { Text(if (addedGlossary) "📖 ✓" else "📖 用語集へ") },
-            )
+            words.forEach { w ->
+                val done = w in added
+                AssistChip(
+                    onClick = {
+                        Glossary.append(context, listOf(w), "直したところから")
+                        added = added + w
+                    },
+                    enabled = !done,
+                    label = { Text(if (done) "📖 $w ✓" else "📖 $w") },
+                )
+            }
             if (others > 0) {
                 AssistChip(
                     onClick = {
@@ -1741,7 +1754,7 @@ private fun LearnedBar(s: Session, segIndex: Int, fixes: List<Corrections.Fix>, 
                         fixedOthers = true
                     },
                     enabled = !fixedOthers,
-                    label = { Text(if (fixedOthers) "🔁 ✓" else "🔁 ほか${others}か所も") },
+                    label = { Text(if (fixedOthers) "🔁 ✓" else "🔁 ほか${others}か所も同じように直す") },
                 )
             }
         }
