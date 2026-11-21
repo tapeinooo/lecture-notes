@@ -52,6 +52,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -272,6 +273,10 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
     var confirmPlay by remember { mutableStateOf<String?>(null) }
     val play by Player.state.collectAsState()
     var homeQuery by remember { mutableStateOf("") }
+    // 探す欄はふだん隠し、右上の虫眼鏡で出す
+    var homeSearch by remember { mutableStateOf(false) }
+    // ラベルの並び替え
+    var sorting by remember { mutableStateOf(false) }
     /** 開いている日（最初は今日だけ開く） */
     // 開いている日は覚えておく（初めてのときは今日だけ開く）
     val homeSt = remember { Settings(context) }
@@ -284,6 +289,10 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
 
     Column(Modifier.fillMaxSize()) {
         Header("たっぴぃず録音", null) {
+            IconBtn(Icons.Default.Search, "探す") {
+                homeSearch = !homeSearch
+                if (!homeSearch) homeQuery = ""
+            }
             EmojiBtn("🎤", "音のテスト") { onSoundTest() }
             IconBtn(Icons.Default.SettingsIcon, "設定") { onSettings() }
         }
@@ -307,20 +316,49 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
                 Spacer(Modifier.width(8.dp))
                 Text("新しく録音する", style = MaterialTheme.typography.titleMedium)
             }
-            // 探す（タイトル・話し手・ラベル・文章）
-            OutlinedTextField(
-                value = homeQuery, onValueChange = { homeQuery = it },
-                placeholder = { Text("探す（タイトル・話し手・文章）") }, singleLine = true,
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                trailingIcon = { if (homeQuery.isNotEmpty()) IconBtn(Icons.Default.Close, "消す") { homeQuery = "" } },
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-            )
+            // 探す（タイトル・話し手・ラベル・文章）。虫眼鏡を押したときだけ出す
+            if (homeSearch) {
+                val searchFocus = remember { FocusRequester() }
+                LaunchedEffect(Unit) { runCatching { searchFocus.requestFocus() } }
+                OutlinedTextField(
+                    value = homeQuery, onValueChange = { homeQuery = it },
+                    placeholder = { Text("探す（タイトル・話し手・文章）") }, singleLine = true,
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    trailingIcon = { IconBtn(Icons.Default.Close, "閉じる") { homeQuery = ""; homeSearch = false } },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp).focusRequester(searchFocus),
+                )
+            }
             TextButton(onClick = onPlan) { Text("📅 予定から枠を作る（大会のプログラムなど）") }
-            // ラベルで絞り込む
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(vertical = 4.dp)) {
+            // ラベルで絞り込む（1行。「すべて」は固定で、ほかは横にスクロール。右端で並び替え）
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
                 FilterChip(selected = filter == null, onClick = { filter = null }, label = { Text("すべて") })
-                labels.forEach { l ->
-                    FilterChip(selected = filter == l, onClick = { filter = if (filter == l) null else l }, label = { Text(l) })
+                Spacer(Modifier.width(6.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                ) {
+                    labels.forEach { l ->
+                        FilterChip(selected = filter == l, onClick = { filter = if (filter == l) null else l }, label = { Text(l) })
+                    }
+                }
+                EmojiBtn("⇅", "ラベルの並び替え") { sorting = !sorting }
+            }
+            if (sorting) {
+                // その場で並び替える（上へ・下へ）
+                Column(
+                    Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                ) {
+                    labels.forEachIndexed { i, l ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(l, modifier = Modifier.weight(1f))
+                            IconBtn(Icons.Default.KeyboardArrowUp, "前へ", enabled = i > 0) { Meta.moveLabel(l, -1) }
+                            IconBtn(Icons.Default.KeyboardArrowDown, "後ろへ", enabled = i < labels.size - 1) { Meta.moveLabel(l, 1) }
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        OkBtn(enabled = true, desc = "並び替えを終える") { sorting = false }
+                    }
                 }
             }
         }
@@ -466,7 +504,7 @@ private fun DayHeader(day: String, count: Int, open: Boolean, recording: Boolean
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
             .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
-        Text(if (open) "▾" else "▸", color = MaterialTheme.colorScheme.outline)
+        Text(if (open) "▼" else "▶\uFE0E", color = MaterialTheme.colorScheme.outline, fontSize = 18.sp)
         Spacer(Modifier.width(8.dp))
         Text(day, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
         if (recording) {
@@ -1097,7 +1135,8 @@ private fun RecordControls(s: Session, isRec: Boolean, otherRec: Boolean, live: 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 RecDot(blink = true, size = 12.dp)
                 Spacer(Modifier.width(6.dp))
-                Text(fmtClock(live.elapsedMs(now)), color = REC_RED, fontWeight = FontWeight.Bold)
+                // 録音中の時間は、音のゲージと同じ緑
+                Text(fmtClock(live.elapsedMs(now)), color = androidx.compose.ui.graphics.Color(0xFF2FB65C), fontWeight = FontWeight.Bold)
                 Spacer(Modifier.width(8.dp))
                 LevelBar(Modifier.weight(1f))
                 Spacer(Modifier.width(8.dp))

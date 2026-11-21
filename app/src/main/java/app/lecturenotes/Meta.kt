@@ -65,6 +65,17 @@ object Meta {
         write("labels", labels.value)
     }
 
+    /** ラベルの並びを1つ動かす（by = -1 で前へ、+1 で後ろへ） */
+    fun moveLabel(label: String, by: Int) {
+        val l = labels.value.toMutableList()
+        val i = l.indexOf(label)
+        val j = i + by
+        if (i < 0 || j !in l.indices) return
+        l[i] = l[j]; l[j] = label
+        labels.value = l
+        write("labels", l)
+    }
+
     fun resetLabels() {
         labels.value = DEFAULT_LABELS
         write("labels", labels.value)
