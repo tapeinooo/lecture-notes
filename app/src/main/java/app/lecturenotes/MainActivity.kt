@@ -121,6 +121,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.em
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.offset
@@ -904,7 +905,9 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
                 item { Text("まだ録音がありません", color = MaterialTheme.colorScheme.outline, modifier = Modifier.padding(16.dp)) }
             }
         }
-        Scrollbar(listState, Modifier.align(Alignment.CenterEnd))
+        // マーカーを付けた所を、スクロールバーに色の線で出す（押すとそこへ飛ぶ）
+        val markTicks = remember(rows, itemOffset) { markerTicks(rows, itemOffset) }
+        Scrollbar(listState, Modifier.align(Alignment.CenterEnd), markTicks)
         // 上へ戻って読んでいるとき、最新（いちばん下）へ戻るボタン
         if (isRec && !following && editing == null) {
             Button(
@@ -1332,7 +1335,7 @@ private val GUTTER = 34.dp
 
 /** 右端のスクロールバー。つまんで動かすと、その位置へ飛ぶ */
 @Composable
-private fun Scrollbar(state: androidx.compose.foundation.lazy.LazyListState, modifier: Modifier) {
+private fun Scrollbar(state: androidx.compose.foundation.lazy.LazyListState, modifier: Modifier, ticks: List<MarkTick> = emptyList()) {
     val scope = rememberCoroutineScope()
     val color = MaterialTheme.colorScheme.outline
     var heightPx by remember { mutableStateOf(1f) }
@@ -1355,7 +1358,22 @@ private fun Scrollbar(state: androidx.compose.foundation.lazy.LazyListState, mod
             .pointerInput(total) {
                 detectVerticalDragGestures(onDragStart = { jump(it.y) }) { change, _ -> jump(change.position.y) }
             }
-            .pointerInput(total) { detectTapGestures { jump(it.y) } },
+            .pointerInput(total, ticks) {
+                detectTapGestures { o ->
+                    // マーカーの線の近くを押したら、そのマーカーの所へ（画面の真ん中あたりに）
+                    val tol = 14.dp.toPx()
+                    val t = ticks.minByOrNull { kotlin.math.abs(tickY(it, total, heightPx) - o.y) }
+                    if (t != null && kotlin.math.abs(tickY(t, total, heightPx) - o.y) <= tol) {
+                        scope.launch {
+                            state.scrollToItem(t.item.coerceIn(0, total - 1))
+                            val li = state.layoutInfo
+                            val vi = li.visibleItemsInfo.firstOrNull { v -> v.index == t.item } ?: return@launch
+                            val center = (li.viewportStartOffset + li.viewportEndOffset) / 2f
+                            state.scrollBy(vi.offset + vi.size * t.frac - center)
+                        }
+                    } else jump(o.y)
+                }
+            },
     ) {
         val w = 4.dp.toPx()
         val x = size.width - w - 3.dp.toPx()
@@ -1365,7 +1383,47 @@ private fun Scrollbar(state: androidx.compose.foundation.lazy.LazyListState, mod
         val ty = (size.height - th) * posFrac
         drawRoundRect(color.copy(alpha = 0.55f), topLeft = androidx.compose.ui.geometry.Offset(x, ty),
             size = androidx.compose.ui.geometry.Size(w, th), cornerRadius = androidx.compose.ui.geometry.CornerRadius(w / 2))
+        // マーカーの線（スクロールバーの上に、横向きの短い線）
+        val lh = 3.dp.toPx()
+        for (t in ticks) {
+            val y = tickY(t, total, size.height).coerceIn(lh / 2, size.height - lh / 2)
+            drawRect(
+                markerDot(t.color),
+                topLeft = androidx.compose.ui.geometry.Offset(size.width - 13.dp.toPx(), y - lh / 2),
+                size = androidx.compose.ui.geometry.Size(12.dp.toPx(), lh),
+            )
+        }
     }
+}
+
+/** スクロールバーに出すマーカーの印：何番目の項目の、上から何割の所か */
+private data class MarkTick(val item: Int, val frac: Float, val color: Char)
+
+private fun tickY(t: MarkTick, total: Int, height: Float) = height * ((t.item + t.frac) / total.coerceAtLeast(1)).coerceIn(0f, 1f)
+
+/** 段落の中のマーカーの位置を集める（同じ段落の近い所の同じ色は1本にまとめる） */
+private fun markerTicks(rows: List<Transcript.Para>, itemOffset: Int): List<MarkTick> {
+    val out = ArrayList<MarkTick>()
+    for ((i, p) in rows.withIndex()) {
+        val content = p.pieces.filter { it.kind != Transcript.Kind.MARK && it.kind != Transcript.Kind.TIME }
+        val total = content.sumOf { it.text.length }.coerceAtLeast(1)
+        var pos = 0
+        for (pc in content) {
+            val g = pc.seg
+            if (g != null) for (e in g.highlights) {
+                val (c, h) = Marker.parse(e)
+                val at = if (h == Marker.WHOLE) listOf(0) else Marker.find(pc.text, h).map { it.first }
+                for (a in at) {
+                    val f = ((pos + a).toFloat() / total).coerceIn(0f, 1f)
+                    if (out.none { it.item == i + itemOffset && it.color == c && kotlin.math.abs(it.frac - f) < 0.15f }) {
+                        out.add(MarkTick(i + itemOffset, f, c))
+                    }
+                }
+            }
+            pos += pc.text.length
+        }
+    }
+    return out
 }
 
 /** 検索で見つかった言葉の色（マーカーの緑・黄・赤と見分けやすい青紫） */
