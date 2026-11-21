@@ -1098,10 +1098,6 @@ private fun RecordControls(s: Session, isRec: Boolean, otherRec: Boolean, live: 
                 Spacer(Modifier.width(8.dp))
                 LevelBar(Modifier.weight(1f))
                 Spacer(Modifier.width(8.dp))
-                OutlinedButton(onClick = onMark, contentPadding = PaddingValues(horizontal = 12.dp)) {
-                    Icon(Icons.Default.Star, contentDescription = "印を付ける", tint = MaterialTheme.colorScheme.tertiary)
-                }
-                Spacer(Modifier.width(6.dp))
                 Button(
                     onClick = {
                         if (stopArmed) {
