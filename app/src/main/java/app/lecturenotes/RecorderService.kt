@@ -150,6 +150,8 @@ class RecorderService : Service() {
         wakeLock = getSystemService(PowerManager::class.java)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "lecturenotes:rec").apply { acquire(14 * 60 * 60 * 1000L) }
         Live.state.value = Live.State(sessionId = id, startedAt = System.currentTimeMillis(), baseMs = session.durationMs)
+        // 前の録音の端末内の文字を持ち越さない
+        synchronized(localText) { localText.setLength(0); recentFinals = "" }
         running = true
         thread = Thread({ recordLoop(id) }, "recorder").apply { start() }
         Processor.wake()
@@ -209,9 +211,12 @@ class RecorderService : Service() {
 
     private fun startLocal() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        // 止めたあとに遅れて届く、前の認識の結果は捨てる（次の録音の文に混ざらないように）
+        var self: LocalRecognizer? = null
         val r = LocalRecognizer(
             this,
-            onFinal = { t ->
+            onFinal = fin@{ t ->
+                if (self == null || local !== self || !running) return@fin
                 // 重複を取り除く（最近確定した文と比べて、まだない部分だけ足す。区切りをまたいでも比べる）
                 val add = synchronized(localText) {
                     val part = Dedupe.newPart(recentFinals, t)
@@ -223,7 +228,8 @@ class RecorderService : Service() {
                 }
                 Live.state.update { if (add.isEmpty()) it.copy(partial = "") else it.copy(liveText = (it.liveText + " " + add).trim(), partial = "") }
             },
-            onPartial = { t ->
+            onPartial = part@{ t ->
+                if (self == null || local !== self || !running) return@part
                 // 省電力モードでは、途中の文字の更新を 0.6 秒に 1 回までにする（画面の描き直しを減らす）
                 val now = System.currentTimeMillis()
                 if (!Power.save.value || t.isEmpty() || now - lastPartialAt >= 600) {
@@ -233,6 +239,7 @@ class RecorderService : Service() {
             },
             onError = { msg -> Live.state.update { it.copy(error = msg) } },
         )
+        self = r
         local = r
         r.start()
     }

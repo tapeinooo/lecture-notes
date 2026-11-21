@@ -20,10 +20,10 @@ object Dedupe {
         val r = norm(recent)
         val i = norm(inc)
         if (i.isEmpty()) return ""
-        // 最近の文に丸ごと含まれる → 重複
-        if (r.takeLast(i.length * 2 + 20).contains(i)) return ""
-        // 終わりと始めの重なり（2 文字以上）
-        for (k in minOf(i.length - 1, r.length) downTo 2) {
+        // 最近の文に丸ごと含まれる → 重複（「はい」「そうです」のような短い言葉は、本当に繰り返すことがあるので消さない）
+        if (i.length >= 6 && r.takeLast(i.length * 2 + 20).contains(i)) return ""
+        // 終わりと始めの重なり（4 文字以上。2〜3 文字は「ます」「して」などで偶然重なりやすい）
+        for (k in minOf(i.length - 1, r.length) downTo 4) {
             if (r.endsWith(i.substring(0, k))) {
                 return cutAfterNormalized(inc, k).trim()
             }
@@ -51,8 +51,26 @@ object Dedupe {
         val pieces = text.split(Regex("(?<=[。！？!?])|\\s+")).map { it.trim() }.filter { it.isNotEmpty() }
         return pieces.filter { p ->
             val n = norm(p)
-            n.length < 3 || lcs(n, ref).toDouble() / n.length < 0.7
+            n.length < 6 || !coveredLocally(n, ref)
         }.joinToString(" ")
+    }
+
+    /**
+     * n が ref のどこか一か所に、ほぼそのまま（8 割以上）あるか。
+     * 長い ref 全体と比べると、よくあるかな文字が偶然そろって「同じ」と見なしてしまうので、
+     * n の 1.5 倍くらいの長さの範囲ごとに比べる。
+     */
+    private fun coveredLocally(n: String, ref: String): Boolean {
+        val w = (n.length * 3 / 2).coerceAtLeast(n.length + 2)
+        if (ref.length <= w) return lcs(n, ref).toDouble() / n.length >= 0.8
+        val step = (n.length / 3).coerceAtLeast(1)
+        var st = 0
+        while (true) {
+            val en = minOf(ref.length, st + w)
+            if (lcs(n, ref.substring(st, en)).toDouble() / n.length >= 0.8) return true
+            if (en == ref.length) return false
+            st += step
+        }
     }
 
     private fun lcs(a: String, b: String): Int {
