@@ -350,7 +350,7 @@ object Scripture {
         val sb = StringBuilder(text)
         for (r in refs.sortedByDescending { it.start }) sb.replace(r.start, r.end, canonical(r))
         // 書名が分からない・表にないものも、「◯章◯節」「◯編◯節」の形は文に残さず「12:1」の形にする
-        return LEFT_CV.replace(sb.toString()) { m ->
+        val cv = LEFT_CV.replace(sb.toString()) { m ->
             val c = num(m.groupValues[1]) ?: return@replace m.value
             val v = num(m.groupValues[2]) ?: return@replace m.value
             val to = m.groupValues[3].ifEmpty { null }?.let(::num)
@@ -361,7 +361,11 @@ object Scripture {
                 else -> ""
             }
         }
+        // 章・節だけのとき（「一章」「三節」）も漢数字・全角の数字は使わない（「1章」「3節」）
+        return ONE_UNIT.replace(cv) { m -> num(m.groupValues[1])?.let { "$it${m.groupValues[2]}${m.groupValues[3]}" } ?: m.value }
     }
+
+    private val ONE_UNIT = Regex("([〇一二三四五六七八九十百]{1,6}|[０-９]{1,3})(\\s*)([章節編篇])")
 
     private const val NUM = "([0-9０-９〇一二三四五六七八九十百]{1,6})"
     private val LEFT_CV = Regex(
