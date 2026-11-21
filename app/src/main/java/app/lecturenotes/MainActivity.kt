@@ -671,6 +671,8 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
     var menu by remember { mutableStateOf(false) }
     // 再生（始める前に確かめる）
     var askPlay by remember { mutableStateOf(false) }
+    // 会話：名前を付けている話し手
+    var renaming by remember { mutableStateOf<String?>(null) }
     val play by Player.state.collectAsState()
     val playingHere = play.sessionId == id
     // 記録の中の検索
@@ -858,6 +860,7 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
             }
         }
         if (playingHere) PlayerBar(play)
+        renaming?.let { who -> SpeakerNameBar(who, onDone = { name -> Talk.rename(id, who, name); renaming = null }, onClose = { renaming = null }) }
         HorizontalDivider()
 
         // キーボードが出て見える範囲が変わったら、カーソルの行を真ん中へ
@@ -919,6 +922,8 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
                 ParaView(
                     para, editing?.first, if (searching) query else "",
                     playing = playingHere && playRow?.first == i,
+                    talk = s.isTalk,
+                    onSpeaker = { renaming = it },
                     onEdit = { g, cursor -> editCursorY = null; editState = EditState(g.index, displayText(g) ?: "", cursor) },
                     onMark = { Marker.toggleWhole(id, it.index) },
                 ) { g ->
@@ -1465,6 +1470,14 @@ private fun markerTicks(rows: List<Transcript.Para>, itemOffset: Int): List<Mark
     return out
 }
 
+/** 会話の話し手の色（Ａ 青・Ｂ 緑・Ｃ 橙・Ｄ 紫） */
+private val SPEAKER_COLORS = listOf(
+    androidx.compose.ui.graphics.Color(0xFF1E6FD9),
+    androidx.compose.ui.graphics.Color(0xFF1E9E4A),
+    androidx.compose.ui.graphics.Color(0xFFD9731E),
+    androidx.compose.ui.graphics.Color(0xFF8E44C9),
+)
+
 /** 検索で見つかった言葉の色（マーカーの緑・黄・赤と見分けやすい青紫） */
 private val SEARCH_COLOR = androidx.compose.ui.graphics.Color(0x807C4DFF)
 
@@ -1489,6 +1502,8 @@ private fun ParaView(
     editingIndex: Int?,
     query: String,
     playing: Boolean = false,
+    talk: Boolean = false,
+    onSpeaker: (String) -> Unit = {},
     onEdit: (Segment, Int) -> Unit,
     onMark: (Segment) -> Unit,
     editor: @Composable (Segment) -> Unit,
@@ -1513,7 +1528,7 @@ private fun ParaView(
             if (gr is Segment) Box(Modifier.padding(end = GUTTER)) { editor(gr) }
             else {
                 @Suppress("UNCHECKED_CAST")
-                PiecesText(gr as List<Transcript.Piece>, query, onEdit, onMark)
+                PiecesText(gr as List<Transcript.Piece>, query, onEdit, onMark, talk, onSpeaker)
             }
         }
     }
@@ -1544,13 +1559,16 @@ private fun wordRange(text: String, off: Int): IntRange {
  *  - 縦に動かす：ふつうにスクロール
  */
 @Composable
-private fun PiecesText(pieces: List<Transcript.Piece>, query: String, onEdit: (Segment, Int) -> Unit, @Suppress("UNUSED_PARAMETER") onMark: (Segment) -> Unit) {
+private fun PiecesText(
+    pieces: List<Transcript.Piece>, query: String, onEdit: (Segment, Int) -> Unit, @Suppress("UNUSED_PARAMETER") onMark: (Segment) -> Unit,
+    talk: Boolean = false, onSpeaker: (String) -> Unit = {},
+) {
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val uri = LocalUriHandler.current
     val cs = MaterialTheme.colorScheme
     val density = LocalDensity.current
-    val built = remember(pieces, cs, query) {
+    val built = remember(pieces, cs, query, talk) {
         val segRanges = ArrayList<SegRange>()
         val urlRanges = ArrayList<Triple<Int, Int, Scripture.Ref>>()
         val hlRanges = ArrayList<HlRange>()
@@ -1600,8 +1618,15 @@ private fun PiecesText(pieces: List<Transcript.Piece>, query: String, onEdit: (S
         }
         // 聖句のリンクは、区間の境目をまたいでも見つかるよう、段落の文全体で探す
         val scan = StringBuilder(body.text).also { sb -> notVerse.forEach { r -> for (k in r) sb.setCharAt(k, ' ') } }.toString()
+        val speakers = ArrayList<Pair<IntRange, String>>()
         val text = buildAnnotatedString {
             append(body)
+            // 会話：行の頭の話し手を、名前ごとの色の太字に（押すと名前を付けられる）
+            if (talk) for (m in Talk.SPEAKER.findAll(scan)) {
+                val g = m.groups[1] ?: continue
+                addStyle(SpanStyle(color = SPEAKER_COLORS[Talk.colorIndex(g.value)], fontWeight = FontWeight.Bold), g.range.first, m.range.last + 1)
+                speakers.add(g.range.first..m.range.last to g.value)
+            }
             for (r in Scripture.find(scan)) {
                 addStyle(SpanStyle(color = cs.primary, textDecoration = TextDecoration.Underline), r.start, r.end)
                 urlRanges.add(Triple(r.start, r.end, r))
@@ -1624,7 +1649,7 @@ private fun PiecesText(pieces: List<Transcript.Piece>, query: String, onEdit: (S
                 from = k + query.length
             }
         }
-        Built(shown, segRanges, urlRanges, hlRanges, stamps)
+        Built(shown, segRanges, urlRanges, hlRanges, stamps, speakers)
     }
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
 
@@ -1760,10 +1785,12 @@ private fun PiecesText(pieces: List<Transcript.Piece>, query: String, onEdit: (S
                                 !moved -> {
                                     // タップ
                                     val url = built.urls.firstOrNull { startOff in it.first until it.second }
+                                    val who = built.speakers.firstOrNull { startOff in it.first }
                                     val hl = built.hls.firstOrNull { startOff in it.start until it.end }
                                     when {
                                         selRange != null && hl == null -> { selRange = null; selSaved = emptyList() }
                                         url != null -> Scripture.open(context, url.third)
+                                        who != null -> onSpeaker(who.second)
                                         hl != null -> {
                                             // マーカーを選ぶ（同じ語句の範囲をまとめる）
                                             selRange = hl.start until hl.end
@@ -1832,6 +1859,8 @@ private class Built(
     val urls: List<Triple<Int, Int, Scripture.Ref>>,
     val hls: List<HlRange>,
     val stamps: List<Pair<Int, String>>,
+    /** 会話：行の頭の話し手（文字の範囲と名前） */
+    val speakers: List<Pair<IntRange, String>> = emptyList(),
 )
 
 /** いま開いている記録（マーカーの保存先） */
@@ -2804,5 +2833,32 @@ private fun PlayerBar(play: Player.State) {
         EmojiBtn(if (play.playing) "⏸" else "▶️", if (play.playing) "一時停止" else "再生") { Player.toggle() }
         TextButton(onClick = { Player.seekBy(15_000) }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text("+15秒") }
         EmojiBtn("⏹", "止める") { Player.stop() }
+    }
+}
+
+
+/** 会話：話し手に名前を付ける帯（その場で。候補は話し手の一覧から） */
+@Composable
+private fun SpeakerNameBar(who: String, onDone: (String) -> Unit, onClose: () -> Unit) {
+    var name by remember(who) { mutableStateOf("") }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(who) { runCatching { focus.requestFocus() } }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("$who →", color = SPEAKER_COLORS[Talk.colorIndex(who)], fontWeight = FontWeight.Bold)
+            OutlinedTextField(
+                value = name, onValueChange = { name = it },
+                placeholder = { Text("名前（この話の「$who」をすべて変える）") }, singleLine = true,
+                modifier = Modifier.weight(1f).padding(horizontal = 4.dp).focusRequester(focus),
+            )
+            IconBtn(Icons.Default.Close, "やめる") { onClose() }
+            OkBtn(enabled = name.isNotBlank(), desc = "名前を付ける") { onDone(name.trim()) }
+        }
+        val cands = Meta.suggest(name, 6).filter { it != who }
+        if (cands.isNotEmpty()) {
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                cands.forEach { c -> AssistChip(onClick = { onDone(c) }, label = { Text(c) }) }
+            }
+        }
     }
 }

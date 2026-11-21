@@ -60,8 +60,13 @@ data class Session(
     val summaryDurationMs: Long = 0,
     /** 声が変わったらしい時刻（記録の中のミリ秒）。段落を区切る参考 */
     val voiceChanges: List<Long> = emptyList(),
+    /** 会話：話し手の印（Ａ など）→ 付けた名前 */
+    val speakerMap: Map<String, String> = emptyMap(),
 ) {
     val durationMs: Long get() = segments.lastOrNull()?.endMs ?: 0L
+
+    /** ラベル「会話」が付いていれば会話モード */
+    val isTalk: Boolean get() = Talk.LABEL in labels
 
     /** 画面に出すタイトル（まだなければ録音日時） */
     val shownTitle: String get() = title.ifBlank { fmtDate(startedAt) }
@@ -71,7 +76,7 @@ data class Session(
 fun autoTitle(s: Session): String? {
     val text = s.segments.asSequence()
         .filter { !it.silent && it.rawEngine != "local" && it.rawEngine != "error" }
-        .mapNotNull { displayText(it)?.trim() }
+        .mapNotNull { displayText(it)?.let { t -> if (s.isTalk) Talk.SPEAKER.replace(t, "") else t }?.trim() }
         .filter { it.isNotEmpty() }
         .take(3).joinToString("")
         .replace(Regex("\\s+"), " ").trim()
@@ -187,6 +192,7 @@ object Repo {
         put("summaryDurationMs", s.summaryDurationMs)
         put("labels", JSONArray(s.labels))
         put("voiceChanges", JSONArray(s.voiceChanges))
+        put("speakerMap", JSONObject().apply { s.speakerMap.forEach { (k, v) -> put(k, v) } })
         put("recording", s.recording)
         put("segments", JSONArray().apply {
             s.segments.forEach { g ->
@@ -256,6 +262,7 @@ object Repo {
             summaryDurationMs = j.optLong("summaryDurationMs"),
             labels = j.optJSONArray("labels")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList(),
             voiceChanges = j.optJSONArray("voiceChanges")?.let { a -> (0 until a.length()).map { a.getLong(it) } } ?: emptyList(),
+            speakerMap = j.optJSONObject("speakerMap")?.let { o -> o.keys().asSequence().associateWith { k -> o.getString(k) } } ?: emptyMap(),
         )
     }
 }

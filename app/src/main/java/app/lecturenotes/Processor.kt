@@ -234,7 +234,9 @@ object Processor {
             return Outcome.DONE
         }
         val glossary = Glossary.load(app)
-        for (c in usable(Role.STT)) {
+        // 会話は、話し手を聞き分けられる Gemini を先に
+        val sttCands = usable(Role.STT).let { l -> if (s.isTalk) l.sortedBy { if (it.provider == "gemini") 0 else 1 } else l }
+        for (c in sttCands) {
             status.value = "${c.model} で文字起こし中（${fmtClock(seg.startMs)}）"
             activity.value = "清書中（${c.model}）"
             try {
@@ -242,13 +244,17 @@ object Processor {
                     when (c.provider) {
                         "groq" -> Groq.transcribe(settings.groqKey, c.model, file, Prompts.whisper(glossary, s, seg), to)
                         "cloudflare" -> Cloudflare.transcribe(settings.cfAccountId, settings.cfToken, file, Prompts.whisper(glossary, s, seg), to)
-                        else -> Gemini.transcribe(settings.geminiKey, c.model, file, Prompts.stt(glossary, s, seg), to)
+                        else -> Gemini.transcribe(
+                            settings.geminiKey, c.model, file,
+                            if (s.isTalk) Prompts.sttTalk(glossary, s, seg) else Prompts.stt(glossary, s, seg), to,
+                        )
                     }
                 }
                 Usage.add(c.key, (seg.endMs - seg.startMs) / 1000.0)
                 used(Role.STT, c)
                 // 聖句は「コリント第一9:10」の形にそろえる
-                save(s, seg, Scripture.normalizeRefs(cleanStt(text)), c)
+                // 会話：名前を付けた話し手は、その名前に
+                save(s, seg, Talk.applyNames(Scripture.normalizeRefs(cleanStt(text)), s.speakerMap), c)
                 return Outcome.DONE
             } catch (e: RateLimited) {
                 Cooldown.set(c.key, e.waitMs, "${c.model}: ${e.message?.take(120)}")
@@ -362,9 +368,9 @@ object Processor {
     private fun format(s: Session, batch: List<Segment>): Outcome {
         val glossary = Glossary.load(app)
         val firstIdx = s.segments.indexOfFirst { it.index == batch.first().index }
-        val context = s.segments.take(firstIdx.coerceAtLeast(0))
+        val context = if (s.isTalk) Talk.previous(s, batch.first().index, 300) else s.segments.take(firstIdx.coerceAtLeast(0))
             .mapNotNull { displayText(it) }.joinToString("").takeLast(300)
-        val system = Prompts.formatSystem(glossary, compact = true)
+        val system = if (s.isTalk) Prompts.formatSystemTalk(glossary, compact = true) else Prompts.formatSystem(glossary, compact = true)
         val user = Prompts.formatUser(context, batch.map { it.raw ?: "" }, Marker.keep(batch), s, voiceHints(s, batch))
 
         for (c in usable(Role.FAST)) {
@@ -418,7 +424,7 @@ object Processor {
         batch.forEachIndexed { i, g ->
             // 「\n」という文字で返ってきた改行を、本当の改行に直す
             // 聖句は「コリント第一9:10」の形にそろえる
-            val out = Scripture.normalizeRefs(fixNewlines(list[i])).trimEnd().trimStart(' ', '\u3000')
+            val out = Talk.applyNames(Scripture.normalizeRefs(fixNewlines(list[i])).trimEnd().trimStart(' ', '\u3000'), s.speakerMap)
             val ok = Guard.keepsContent(g.raw ?: "", out)
             if (!ok) rejected++
             Repo.updateSegment(s.id, g.index) {
@@ -470,7 +476,7 @@ object Processor {
                 (failures["sum:${s.id}"] ?: 0) < 3
         } ?: return false
         val style = Summary.Style.of(st.summaryStyle)
-        val system = Summary.system(style)
+        val system = if (s.isTalk) Summary.systemTalk() else Summary.system(style)
         val user = Summary.input(s)
         if (user.length < 30) {
             Repo.update(s.id) { it.copy(summary = "（要約するほどの文がありません）", summaryModel = "") }
@@ -558,9 +564,11 @@ object Processor {
                 // Groq は1分あたりの量が少ないので、小さく分けて（8区間・用語集は短く）送る
                 val batch = if (c.provider == "groq") full.take(8) else full
                 val firstIdx = s.segments.indexOfFirst { it.index == batch.first().index }
-                val context = s.segments.take(firstIdx.coerceAtLeast(0))
-                    .mapNotNull { displayText(it) }.joinToString("").takeLast(if (c.provider == "groq") 300 else 800)
-                val system = Prompts.formatSystem(glossary, compact = c.provider == "groq")
+                val ctxLen = if (c.provider == "groq") 300 else 800
+                val context = if (s.isTalk) Talk.previous(s, batch.first().index, ctxLen) else s.segments.take(firstIdx.coerceAtLeast(0))
+                    .mapNotNull { displayText(it) }.joinToString("").takeLast(ctxLen)
+                val system = if (s.isTalk) Prompts.formatSystemTalk(glossary, compact = c.provider == "groq")
+                else Prompts.formatSystem(glossary, compact = c.provider == "groq")
                 val user = Prompts.formatUser(context, batch.map { it.raw ?: "" }, Marker.keep(batch), s, voiceHints(s, batch))
                 polishStatus.value = "${c.model} で仕上げ中（${fmtClock(batch.first().startMs)}〜、${batch.size}区間）"
                 polishActivity.value = "仕上げ中（${c.model}）"
@@ -655,6 +663,52 @@ object Prompts {
         return if (prev.isEmpty()) terms else "$terms\n$prev"
     }
 
+    /** 聖句の書き方（講演・会話で共通） */
+    private const val SCRIPTURE_RULE = "聖句の参照は「ヨハネ3:16」「コリント第一9:10」「テモテ第二3:1-5」の形にそろえてください（書名は新世界訳の書名）。書名と章・節の間には、読点・句点・空白・改行を入れず、続けて書いてください（「コリント第一、9:10」ではなく「コリント第一9:10」）。「十章の五節」のような漢数字も「10:5」の形にします。詩編は「◯編◯節」と言うので、「詩編二十三編一節」は「詩編23:1」にします。章や節だけのときも漢数字は使わず「1章」「2節」と書いてください。節が複数のときは「10:9, 10」のように区切りを残し、数字をつなげないでください（9,10 を 90 にしない）。"
+
+    /** 会話の書き起こし（Gemini は話し手を聞き分けられる） */
+    fun sttTalk(glossary: String, s: Session, seg: Segment) = """
+これは日本語の会話（複数の人の話し合い。エホバの証人の仲間どうしなど）の録音の一部です。
+話し手ごとに分けて、話されたとおりに書き起こしてください。
+・発言ごとに1行にし、行の頭に話し手を「Ａ：」「Ｂ：」のように付けてください。
+・直前の内容に出てくる人と同じ人なら、同じ書き方（名前が付いていればその名前）を使ってください。新しい人には、まだ使っていない文字（Ｃ、Ｄ…）を使ってください。
+・この録音の最初が、直前の内容の最後の発言の続きなら、その行は話し手を付けずに書き始めてください。
+・話し言葉のまま書いてください（書き言葉や、です・ます調に直さない）。「はい」「うん」「そうですね」などの相づちも1行として残してください。「えー」「あのー」は消してかまいません。
+・句読点を付けてください。話していない内容を足さないでください。要約しないでください。
+・聞き取れない部分は「…」としてください。無音や音楽だけのときは、何も出力しないでください。
+・用語・書名は、新世界訳聖書（2019年改訂版）と jw.org の出版物の表記に合わせてください。$SCRIPTURE_RULE
+・次の用語集の表記に合わせてください（「誤→正」は直し方の例）：
+${Glossary.forPrompt(glossary)}
+${corrections(s)}
+${Talk.previous(s, seg.index, 300).let { if (it.isEmpty()) "" else "直前の内容（参考。出力には含めない）：\n$it\n" }}
+出力は書き起こした本文だけにしてください。
+""".trim()
+
+    /** 会話の整形の決まった部分 */
+    fun formatSystemTalk(glossary: String, compact: Boolean) = """
+あなたは日本語の会話の書き起こしを整える編集者です。会話はエホバの証人の仲間どうしの話し合いなどです。
+
+規則：
+1. 入力は音声認識の結果を区間ごとに分けた配列です。必ず同じ数・同じ順の配列で返してください。
+2. 話した内容は変えないでください。要約・言い換え・付け足しはしないでください。話し言葉のまま残してください（書き言葉や、です・ます調に直さない）。
+3. 消してよいのは「えー」「あのー」などのつなぎ言葉と、言い直しだけです。「はい」「うん」「そうですね」などの相づちは消さずに残してください。文を丸ごと消すことは絶対にしないでください。
+4. 発言ごとに改行し、行の頭に話し手を「Ａ：」「Ｂ：」のように付けてください。
+   ・入力にすでに話し手が付いていれば、それを変えないでください（名前が付いていれば名前のまま）。
+   ・付いていなければ、話の流れ（問いと答え・相づち・呼びかけ）と「声が変わった可能性のある位置」から判断して付けてください。
+   ・直前の内容に出てくる人と同じ人には、同じ書き方を使ってください。新しい人には、まだ使っていない文字（Ｃ、Ｄ…）を使ってください。
+   ・区間の始めが、前の区間の最後の発言の続きなら、その行は話し手を付けずに続けてください。
+5. 句読点を整えてください。音声認識の誤りと思われる語は、文脈と用語集から正しい語に直してください。
+6. 用語・人名・書名は、wol.jw.org（新世界訳聖書 2019年改訂版、ものみの塔出版物）の表記に合わせてください。
+7. $SCRIPTURE_RULE
+8. 区間の境目で文が切れていても、そのままにしてください（前後の区間に文を動かさない）。
+9. 話題が大きく変わるところだけ、空行（改行を2つ）を入れてください。「\n」という文字を書くのではなく、本当の改行にしてください。
+10. 利用者が直した語・例があれば、それに従ってください。
+11. 出力は JSON だけ：{"segments":["…","…"]}
+
+用語集（「誤→正」は直し方の例）：
+${if (compact) Glossary.forPromptCompact(glossary) else Glossary.forPrompt(glossary)}
+""".trim()
+
     fun stt(glossary: String, s: Session, seg: Segment) = """
 これは日本語の講演（エホバの証人の集会・大会の講演）の録音の一部です。
 話された内容を、そのまま正確に書き起こしてください。
@@ -686,7 +740,7 @@ ${previousText(s, seg, 200).let { if (it.isEmpty()) "" else "直前に話され�
 4. 句読点を整え、読みやすくしてください。
 5. 音声認識の誤りと思われる語は、文脈と用語集から正しい語に直してください。
 6. 用語・人名・書名・言い回しは、wol.jw.org（新世界訳聖書 2019年改訂版、ものみの塔出版物）の表記に合わせてください。
-7. 聖句の参照は「ヨハネ3:16」「コリント第一9:10」「テモテ第二3:1-5」の形にそろえてください（書名は新世界訳の書名）。書名と章・節の間には、読点・句点・空白・改行を入れず、続けて書いてください（「コリント第一、9:10」ではなく「コリント第一9:10」）。「十章の五節」のような漢数字も「10:5」の形にします。詩編は「◯編◯節」と言うので、「詩編二十三編一節」は「詩編23:1」にします。章や節だけのときも漢数字は使わず「1章」「2節」と書いてください。節が複数のときは「10:9, 10」のように区切りを残し、数字をつなげないでください（9,10 を 90 にしない）。
+7. $SCRIPTURE_RULE
 8. 聖句を朗読している部分は、聞こえた言葉をそのまま残してください。本文を自分で補ったり、言い換えたり、省いたりしないでください（明らかな聞き間違いの語だけ直す）。
 9. 区間の境目で文が切れていても、そのままにしてください（前後の区間に文を動かさない）。
 10. 段落：話題が変わるところ、聖句の朗読の前後、問いかけの前などで新しい段落にします。新しい段落を始める位置に空行（改行を2つ）を入れてください（区間の先頭でも途中でもよい）。「\n」という文字を書くのではなく、本当の改行にしてください。段落は長くしすぎず、目安は200〜400字です。直前の内容の最後の段落がすでに長ければ、早めに区切ってください。
