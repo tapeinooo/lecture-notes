@@ -99,9 +99,13 @@ object Repo {
             if (s.segments.any { g -> (g.formatted?.contains("\\n") == true) || (g.edited?.contains("\\n") == true) }) {
                 s = s.copy(segments = s.segments.map { g -> g.copy(formatted = g.formatted?.let(::fixNewlines), edited = g.edited?.let(::fixNewlines)) })
             }
-            // 聖句を「コリント第一9:10」の形にそろえる（自分で直した文はそのまま）
+            // 聖句を「コリント第一9:10」の形にそろえる（自分で直した文も。「◯章◯節」は残さない）
             val refFixed = s.segments.map { g ->
-                g.copy(raw = g.raw?.let(Scripture::normalizeRefs), formatted = g.formatted?.let(Scripture::normalizeRefs))
+                g.copy(
+                    raw = g.raw?.let(Scripture::normalizeRefs),
+                    formatted = g.formatted?.let(Scripture::normalizeRefs),
+                    edited = g.edited?.let(Scripture::normalizeRefs),
+                )
             }
             if (refFixed != s.segments) s = s.copy(segments = refFixed)
             if (s.recording) s = s.copy(recording = false)

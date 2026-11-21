@@ -344,13 +344,34 @@ object Scripture {
         return "$head${r.chapter}:${r.verse}$tail"
     }
 
-    /** 文の中の聖句を「コリント第一9:10」の形に書き直す（実在するものだけ） */
+    /** 文の中の聖句を「コリント第一9:10」の形に書き直す */
     fun normalizeRefs(text: String): String {
         val refs = find(text)
-        if (refs.isEmpty()) return text
         val sb = StringBuilder(text)
         for (r in refs.sortedByDescending { it.start }) sb.replace(r.start, r.end, canonical(r))
-        return sb.toString()
+        // 書名が分からない・表にないものも、「◯章◯節」「◯編◯節」の形は文に残さず「12:1」の形にする
+        return LEFT_CV.replace(sb.toString()) { m ->
+            val c = num(m.groupValues[1]) ?: return@replace m.value
+            val v = num(m.groupValues[2]) ?: return@replace m.value
+            val to = m.groupValues[3].ifEmpty { null }?.let(::num)
+            val and = m.groupValues[4].ifEmpty { null }?.let(::num)
+            "$c:$v" + when {
+                to != null -> "-$to"
+                and != null -> ",$and"
+                else -> ""
+            }
+        }
+    }
+
+    private const val NUM = "([0-9０-９〇一二三四五六七八九十百]{1,6})"
+    private val LEFT_CV = Regex(
+        "$NUM\\s*[章編篇]\\s*の?\\s*$NUM\\s*節(?:\\s*(?:から|[-‐－–〜~～])\\s*$NUM\\s*節?|\\s*[、,，]\\s*$NUM\\s*節)?",
+    )
+
+    /** 「23」「２３」「二十三」を数に */
+    private fun num(s: String): Int? {
+        val d = s.map { c -> if (c in '０'..'９') '0' + (c - '０') else c }.joinToString("")
+        return (d.toIntOrNull() ?: kanjiValue(d))?.takeIf { it in 1..999 }
     }
 
     /** JW Library の聖句の番号（書・章・節を 2・3・3 桁で。例 ヨハネ 3:16 → 43003016）。範囲は「-」でつなぐ */

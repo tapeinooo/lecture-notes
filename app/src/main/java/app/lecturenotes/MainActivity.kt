@@ -1827,7 +1827,7 @@ private fun InlineEditor(
         val edit = field.text
         if (edit != before) {
             val fixes = Corrections.extract(before, edit)
-            Repo.updateSegment(s.id, g.index) { it.copy(edited = edit) }
+            Repo.updateSegment(s.id, g.index) { it.copy(edited = Scripture.normalizeRefs(edit)) }
             if (fixes.isNotEmpty()) {
                 onLearned(fixes)
             }
