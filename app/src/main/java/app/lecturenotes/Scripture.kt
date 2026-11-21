@@ -222,13 +222,22 @@ object Scripture {
         return dp[b.length]
     }
 
-    /** 文の終わり（章・節の直前）にある書名。見つかれば（書名の長さ, 書の番号） */
-    private fun bookBefore(prefix: String): Pair<Int, Int>? {
-        // 1) 登録してある言い方（ひらがなはカタカナにして比べる）
+    /** 書名と章の間に入っていても飛ばす文字（空白・「の」・句読点・改行など） */
+    private val SEP = charArrayOf(' ', '　', 'の', 'ノ', '、', '。', '，', '．', ',', '.', '・', '\n', '\t', '「', '」', '『', '』', '（', '）', '(', ')')
+
+    /** 登録してある言い方にぴったり合う書名（ひらがなはカタカナにして比べる） */
+    private fun exactBookBefore(prefix: String): Pair<Int, Int>? {
         val pk = toKatakana(prefix)
         for ((name, b) in sortedKana) {
             if (pk.endsWith(name)) return name.length to b
         }
+        return null
+    }
+
+    /** 文の終わり（章・節の直前）にある書名。見つかれば（書名の長さ, 書の番号） */
+    private fun bookBefore(prefix: String): Pair<Int, Int>? {
+        // 1) 登録してある言い方
+        exactBookBefore(prefix)?.let { return it }
         // 2) 聞き間違い：直前の語（書名に使う文字の続き）の終わりの部分を、近い書名に当てはめる
         var r = prefix.length
         while (r > 0 && isNameChar(prefix[r - 1]) && prefix.length - r < 14) r--
@@ -266,11 +275,20 @@ object Scripture {
             val list = m.groupValues[6].isNotEmpty() && ev != null
             // 直前の書名（間の空白・「の」は飛ばす）
             val prefixRaw = t.substring(maxOf(0, m.range.first - 30), m.range.first)
-            val prefix = prefixRaw.trimEnd(' ', '　', 'の', 'ノ')
+            var prefix = prefixRaw.trimEnd(' ', '　', 'の', 'ノ')
+            var found = bookBefore(prefix)
+            if (found == null) {
+                // 整形で書名と章の間に句読点が入ったもの（「コリント第一、9:10」「ヨハネ。3章16節」）。
+                // 聞き間違いの当てはめはせず、登録してある書名にぴったり合うときだけ
+                val p2 = prefixRaw.trimEnd(*SEP)
+                if (p2.length < prefix.length) {
+                    exactBookBefore(p2)?.let { found = it; prefix = p2 }
+                }
+            }
             val gap = prefixRaw.length - prefix.length
-            val found = bookBefore(prefix)
+            val fb = found
             val (start, book, bookless) = when {
-                found != null -> Triple(m.range.first - gap - found.first, found.second, false)
+                fb != null -> Triple(m.range.first - gap - fb.first, fb.second, false)
                 // 書名がない「◯章◯節」は、前に出てきた書名を使う（時刻と区別するため「章」「節」が必要）
                 viaChapter && hasSetsu -> {
                     val b = mentionedBefore(t, m.range.first, lastBook, lastBookPos) ?: continue

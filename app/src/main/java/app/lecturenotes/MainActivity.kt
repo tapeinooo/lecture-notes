@@ -1462,7 +1462,8 @@ private fun PiecesText(pieces: List<Transcript.Piece>, query: String, onEdit: (S
         val urlRanges = ArrayList<Triple<Int, Int, Scripture.Ref>>()
         val hlRanges = ArrayList<HlRange>()
         val stamps = ArrayList<Pair<Int, String>>() // 文字の位置と、分の打刻
-        val text = buildAnnotatedString {
+        val notVerse = ArrayList<IntRange>() // 聖句を探さないところ（★の印・🖍 の語句）
+        val body = buildAnnotatedString {
             for (p in pieces) {
                 val start = length
                 if (p.kind == Transcript.Kind.TIME) {
@@ -1477,6 +1478,7 @@ private fun PiecesText(pieces: List<Transcript.Piece>, query: String, onEdit: (S
                     else -> SpanStyle(color = cs.onSurface)
                 }
                 withStyle(style) { append(if (p.kind == Transcript.Kind.MARK) " ${p.text} " else p.text) }
+                if (p.kind == Transcript.Kind.MARK) notVerse.add(start until length)
                 p.seg?.let { g ->
                     val full = displayText(g) ?: ""
                     for (e in g.highlights) {
@@ -1496,16 +1498,20 @@ private fun PiecesText(pieces: List<Transcript.Piece>, query: String, onEdit: (S
                             val ns = length
                             withStyle(bg) { append(" 🖍$h") }
                             hlRanges.add(HlRange(ns, length, g, e))
+                            notVerse.add(ns until length)
                         }
                     }
                 }
-                if (p.kind != Transcript.Kind.MARK) {
-                    for (r in Scripture.find(p.text)) {
-                        addStyle(SpanStyle(color = cs.primary, textDecoration = TextDecoration.Underline), start + r.start, start + r.end)
-                        urlRanges.add(Triple(start + r.start, start + r.end, r))
-                    }
-                }
                 p.seg?.let { segRanges.add(SegRange(start, length, it, p.text)) }
+            }
+        }
+        // 聖句のリンクは、区間の境目をまたいでも見つかるよう、段落の文全体で探す
+        val scan = StringBuilder(body.text).also { sb -> notVerse.forEach { r -> for (k in r) sb.setCharAt(k, ' ') } }.toString()
+        val text = buildAnnotatedString {
+            append(body)
+            for (r in Scripture.find(scan)) {
+                addStyle(SpanStyle(color = cs.primary, textDecoration = TextDecoration.Underline), r.start, r.end)
+                urlRanges.add(Triple(r.start, r.end, r))
             }
         }
         // 検索で見つかったところ（青っぽく）
