@@ -118,7 +118,7 @@ object Scripture {
 
     // ---- 章・節の形（書名は別に探す）
     private const val END = "(?:\\s*(?:[-‐－–〜~～]|から)\\s*(\\d{1,3})(?:\\s*節)?|\\s*[,，、]\\s*(\\d{1,3})(?!\\d|\\s*[人年月日時分歳回個つ件冊])(?:\\s*節)?)?"
-    private val cv = Regex("(\\d{1,3})\\s*(?:章\\s*(?:の)?\\s*(\\d{1,3})\\s*(節)?|[:：]\\s*(\\d{1,3}))$END")
+    private val cv = Regex("(\\d{1,3})\\s*(?:[章編篇]\\s*(?:の)?\\s*(\\d{1,3})\\s*(節)?|[:：]\\s*(\\d{1,3}))$END")
 
     /**
      * endVerse は「1-5」「9,10」の後ろの数（なければ null）。list = 「9,10」の形。
@@ -183,7 +183,7 @@ object Scripture {
                 // 「章」「節」の前の漢数字だけ変える（「コリント第一」などの書名はそのまま）
                 var k2 = j
                 while (k2 < s.length && (s[k2] == ' ' || s[k2] == '　')) k2++
-                val beforeUnit = k2 < s.length && (s[k2] == '章' || s[k2] == '節')
+                val beforeUnit = k2 < s.length && (s[k2] == '章' || s[k2] == '節' || s[k2] == '編' || s[k2] == '篇')
                 if (v != null && v in 1..999 && beforeUnit) {
                     v.toString().forEach { d -> sb.append(d); st.add(i); en.add(j) }
                 } else {
@@ -221,6 +221,8 @@ object Scripture {
         }
         return dp[b.length]
     }
+
+    private val HEN = Regex("^\\d{1,3}\\s*[編篇]")
 
     /** 書名と章の間に入っていても飛ばす文字（空白・「の」・句読点・改行など） */
     private val SEP = charArrayOf(' ', '　', 'の', 'ノ', '、', '。', '，', '．', ',', '.', '・', '\n', '\t', '「', '」', '『', '』', '（', '）', '(', ')')
@@ -287,8 +289,12 @@ object Scripture {
             }
             val gap = prefixRaw.length - prefix.length
             val fb = found
+            // 詩編は「23編1節」と言う
+            val viaHen = HEN.containsMatchIn(m.value)
             val (start, book, bookless) = when {
                 fb != null -> Triple(m.range.first - gap - fb.first, fb.second, false)
+                // 書名のない「◯編◯節」は詩編
+                viaHen && hasSetsu -> Triple(m.range.first, 19, false)
                 // 書名がない「◯章◯節」は、前に出てきた書名を使う（時刻と区別するため「章」「節」が必要）
                 viaChapter && hasSetsu -> {
                     val b = mentionedBefore(t, m.range.first, lastBook, lastBookPos) ?: continue
