@@ -6,7 +6,7 @@ import org.json.JSONArray
 
 /** 話し手の候補とラベルの一覧（すべての記録で共通） */
 object Meta {
-    val DEFAULT_LABELS = listOf("集会", "講演", "大会", "その他")
+    val DEFAULT_LABELS = listOf("集会", "講演", "大会", "会話", "その他")
 
     private const val PREF = "meta"
 
@@ -31,6 +31,18 @@ object Meta {
         val fromSessions = Repo.sessions.value.map { it.speaker.trim() }.filter { it.isNotEmpty() }
         speakers.value = ((read("speakers") ?: emptyList()) + fromSessions).distinct()
         labels.value = read("labels") ?: DEFAULT_LABELS
+        // 「会話」を足す（前からラベルを持っている人にも1回だけ。消したらもう足さない）
+        val pref = app.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+        if (!pref.getBoolean("addedTalkLabel", false)) {
+            if ("会話" !in labels.value) {
+                val l = labels.value.toMutableList()
+                val at = l.indexOf("その他").let { if (it < 0) l.size else it }
+                l.add(at, "会話")
+                labels.value = l
+                write("labels", l)
+            }
+            pref.edit().putBoolean("addedTalkLabel", true).apply()
+        }
     }
 
     fun addSpeaker(name: String) {
