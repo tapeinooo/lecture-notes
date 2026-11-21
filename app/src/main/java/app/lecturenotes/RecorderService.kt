@@ -43,6 +43,8 @@ class RecorderService : Service() {
         private const val CHANNEL = "recording"
 
         fun start(context: Context, sessionId: String) {
+            // 再生中なら止める（スピーカーの音を録音しないように）
+            Player.stop()
             ContextCompat.startForegroundService(
                 context,
                 Intent(context, RecorderService::class.java).setAction(ACTION_START).putExtra(EXTRA_ID, sessionId),

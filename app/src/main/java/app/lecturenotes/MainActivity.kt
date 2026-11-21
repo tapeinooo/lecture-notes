@@ -69,6 +69,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings as SettingsIcon
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Search
@@ -267,6 +268,8 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
     val labels by Meta.labels.collectAsState()
     var filter by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf<String?>(null) }
+    var confirmPlay by remember { mutableStateOf<String?>(null) }
+    val play by Player.state.collectAsState()
     var homeQuery by remember { mutableStateOf("") }
     /** 開いている日（最初は今日だけ開く） */
     // 開いている日は覚えておく（初めてのときは今日だけ開く）
@@ -275,6 +278,8 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
     val shown = sessions.filter { s ->
         (filter == null || filter in s.labels) && (homeQuery.isBlank() || matchesSession(s, homeQuery))
     }
+    // 画面に並んでいる順（続けて再生するときの「次」）
+    val ordered = shown.groupBy { fmtDay(it.startedAt) }.values.flatMap { l -> l.sortedBy { it.startedAt } }
 
     Column(Modifier.fillMaxSize()) {
         Header("たっぴぃず録音", null) {
@@ -366,6 +371,7 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
                                         fmtClock(s.durationMs),
                                         s.speaker.ifBlank { null },
                                         if (recording) "録音中" else null,
+                                        if (play.sessionId == s.id) (if (play.playing) "▶ " else "⏸ ") + fmtClock(play.posMs) else null,
                                         if (Backup.upToDate(context, s)) "☁" else null,
                                     ).joinToString("・"),
                                     style = MaterialTheme.typography.bodySmall,
@@ -379,10 +385,39 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
                                     )
                                 }
                             }
+                            // 再生（ゴミ箱の左）。再生中の話は一時停止・止めるに変わる
+                            if (play.sessionId == s.id) {
+                                EmojiBtn(if (play.playing) "⏸" else "▶️", if (play.playing) "一時停止" else "再生") { Player.toggle() }
+                                EmojiBtn("⏹", "止める") { Player.stop() }
+                            } else if (live.sessionId == null && s.segments.isNotEmpty()) {
+                                IconBtn(Icons.Default.PlayArrow, "再生", tint = MaterialTheme.colorScheme.outline) {
+                                    confirmPlay = if (confirmPlay == s.id) null else s.id
+                                    confirmDelete = null
+                                }
+                            }
                             if (!recording) {
                                 IconBtn(Icons.Default.Delete, "削除", tint = MaterialTheme.colorScheme.outline) {
                                     confirmDelete = if (confirmDelete == s.id) null else s.id
+                                    confirmPlay = null
                                 }
+                            }
+                        }
+                        // 突然音が出ないよう、再生の前に確かめる
+                        if (confirmPlay == s.id) {
+                            val rest = ordered.dropWhile { it.id != s.id }.drop(1).filter { it.segments.isNotEmpty() }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "▶ 再生する？（音が出ます）" + if (rest.isNotEmpty()) "\n終わったら次の話（${rest.size} 件）へ続けます" else "",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                IconBtn(Icons.Default.Close, "やめる") { confirmPlay = null }
+                                Spacer(Modifier.width(4.dp))
+                                FilledIconButton(
+                                    onClick = { confirmPlay = null; Player.play(context, s.id, 0, rest.map { it.id }) },
+                                    modifier = Modifier.size(40.dp),
+                                ) { Icon(Icons.Default.PlayArrow, contentDescription = "再生する") }
                             }
                         }
                         if (confirmDelete == s.id) {
@@ -595,6 +630,10 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
     }
 
     var menu by remember { mutableStateOf(false) }
+    // 再生（始める前に確かめる）
+    var askPlay by remember { mutableStateOf(false) }
+    val play by Player.state.collectAsState()
+    val playingHere = play.sessionId == id
     // 記録の中の検索
     // 一覧の検索から開いたときは、その言葉に印を付けた状態で開く
     var searching by remember { mutableStateOf(initialQuery.isNotBlank()) }
@@ -651,6 +690,11 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
             Box {
                 IconBtn(Icons.Default.MoreVert, "その他") { menu = true }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    MenuHeader("再生")
+                    MenuItem("▶️", "録音を再生", enabled = live.sessionId == null && s.segments.isNotEmpty()) {
+                        menu = false
+                        askPlay = true
+                    }
                     MenuHeader("共有")
                     MenuItem("📤", "文章を送る") {
                         menu = false
@@ -727,8 +771,10 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
                 }
             }
         }
+        // 段落より前にある項目（要約の枠）の数
+        val itemOffset = if (s.completed || s.summary != null) 1 else 0
         LaunchedEffect(hits, hitPos) {
-            if (hits.isNotEmpty()) listState.animateScrollToItem(hits[hitPos.coerceIn(0, hits.size - 1)])
+            if (hits.isNotEmpty()) listState.animateScrollToItem(hits[hitPos.coerceIn(0, hits.size - 1)] + itemOffset)
         }
         if (showInfo) {
             InfoPanel(s, if (isRec) live.elapsedMs(now) else null) { showInfo = false }
@@ -750,6 +796,29 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
             Repo.update(id) { it.copy(marks = it.marks + Mark(t, "")) }
             noteFor = t
         })
+        // 再生を始める前の確認（突然音が出ないように）
+        if (askPlay && !playingHere) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+                Text(
+                    "▶ 録音を再生する？（音が出ます）",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f),
+                )
+                IconBtn(Icons.Default.Close, "やめる") { askPlay = false }
+                // いま画面のいちばん上に見えている段落から
+                TextButton(onClick = {
+                    askPlay = false
+                    val i = (listState.firstVisibleItemIndex - itemOffset).coerceIn(0, (rows.size - 1).coerceAtLeast(0))
+                    Player.play(context, id, rows.getOrNull(i)?.startMs ?: 0)
+                }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("見ている所から") }
+                FilledIconButton(
+                    onClick = { askPlay = false; Player.play(context, id, 0) },
+                    modifier = Modifier.size(40.dp),
+                ) { Icon(Icons.Default.PlayArrow, contentDescription = "最初から再生する") }
+            }
+        }
+        if (playingHere) PlayerBar(play)
         HorizontalDivider()
 
         // キーボードが出て見える範囲が変わったら、カーソルの行を真ん中へ
@@ -761,6 +830,38 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
             val y = editCursorY ?: return@LaunchedEffect
             val delta = y - (listTop + listHeight / 2)
             if (kotlin.math.abs(delta) > 24) listState.animateScrollBy(delta)
+        }
+        // 再生している所（何番目の段落の、どのあたりか）
+        val playRow = if (playingHere) remember(rows, play.segIndex, play.segPosMs / 1000) { playPosition(rows, play) } else null
+        // 自分でスクロールしたら、しばらく（6秒）自動で動かさない
+        var autoScrolling by remember { mutableStateOf(false) }
+        var userScrolledAt by remember { mutableLongStateOf(0L) }
+        LaunchedEffect(listState.isScrollInProgress) {
+            if (listState.isScrollInProgress && !autoScrolling) userScrolledAt = System.currentTimeMillis()
+        }
+        // 再生中は、再生している文がだいたい画面の真ん中に来るように動かす
+        LaunchedEffect(playingHere, playRow?.first, play.posMs / 1500) {
+            val (row, frac) = playRow ?: return@LaunchedEffect
+            if (!play.playing || editing != null) return@LaunchedEffect
+            if (System.currentTimeMillis() - userScrolledAt < 6000) return@LaunchedEffect
+            val item = row + itemOffset
+            autoScrolling = true
+            try {
+                var info = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == item }
+                if (info == null) {
+                    listState.scrollToItem(item)
+                    info = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == item }
+                }
+                if (info != null) {
+                    val li = listState.layoutInfo
+                    val target = info.offset + info.size * frac
+                    val center = (li.viewportStartOffset + li.viewportEndOffset) / 2f
+                    val delta = target - center
+                    if (kotlin.math.abs(delta) > 40) listState.animateScrollBy(delta)
+                }
+            } finally {
+                autoScrolling = false
+            }
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
         LazyColumn(
@@ -778,6 +879,7 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
                 val para = rows[i]
                 ParaView(
                     para, editing?.first, if (searching) query else "",
+                    playing = playingHere && playRow?.first == i,
                     onEdit = { g, cursor -> editCursorY = null; editState = EditState(g.index, displayText(g) ?: "", cursor) },
                     onMark = { Marker.toggleWhole(id, it.index) },
                 ) { g ->
@@ -1293,11 +1395,14 @@ private fun ParaView(
     para: Transcript.Para,
     editingIndex: Int?,
     query: String,
+    playing: Boolean = false,
     onEdit: (Segment, Int) -> Unit,
     onMark: (Segment) -> Unit,
     editor: @Composable (Segment) -> Unit,
 ) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 7.dp)) {
+    // 再生している段落は、うすく色を付ける
+    val playBg = if (playing) Modifier.background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), RoundedCornerShape(6.dp)) else Modifier
+    Column(Modifier.fillMaxWidth().then(playBg).padding(vertical = 7.dp)) {
         // 直している区間のところで文を分け、その区間だけ入力欄にする
         val groups = ArrayList<Any>() // List<Piece> か Segment（入力欄）
         var run = ArrayList<Transcript.Piece>()
@@ -2565,4 +2670,40 @@ private fun ImportDialog(onDismiss: () -> Unit, onAdd: (List<String>) -> Unit) {
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("やめる") } },
     )
+}
+
+
+/** 再生している所：何番目の段落か、その段落の上から何割あたりか */
+private fun playPosition(rows: List<Transcript.Para>, play: Player.State): Pair<Int, Float>? {
+    if (rows.isEmpty()) return null
+    for ((i, p) in rows.withIndex()) {
+        val content = p.pieces.filter { it.kind != Transcript.Kind.MARK && it.kind != Transcript.Kind.TIME }
+        val k = content.indexOfFirst { it.seg?.index == play.segIndex }
+        if (k < 0) continue
+        val total = content.sumOf { it.text.length }.coerceAtLeast(1)
+        val before = content.take(k).sumOf { it.text.length }
+        val g = content[k].seg!!
+        val segLen = (g.endMs - g.startMs).coerceAtLeast(1)
+        val inSeg = (play.segPosMs.toFloat() / segLen).coerceIn(0f, 1f)
+        return i to ((before + content[k].text.length * inSeg) / total).coerceIn(0f, 1f)
+    }
+    // 文のない区間（無音など）は、その時刻より前の最後の段落の終わりあたり
+    val i = rows.indexOfLast { it.startMs <= play.posMs }.coerceAtLeast(0)
+    return i to 1f
+}
+
+/** 再生中の操作（記録の画面の上のほう） */
+@Composable
+private fun PlayerBar(play: Player.State) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+        Text(
+            "${fmtClock(play.posMs)} / ${fmtClock(play.totalMs)}",
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.padding(start = 4.dp).weight(1f),
+        )
+        TextButton(onClick = { Player.seekBy(-15_000) }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text("−15秒") }
+        EmojiBtn(if (play.playing) "⏸" else "▶️", if (play.playing) "一時停止" else "再生") { Player.toggle() }
+        TextButton(onClick = { Player.seekBy(15_000) }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text("+15秒") }
+        EmojiBtn("⏹", "止める") { Player.stop() }
+    }
 }
