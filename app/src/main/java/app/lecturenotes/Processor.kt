@@ -234,9 +234,8 @@ object Processor {
             return Outcome.DONE
         }
         val glossary = Glossary.load(app)
-        // 会話は、話し手を聞き分けられる Gemini を先に
-        val sttCands = usable(Role.STT).let { l -> if (s.isTalk) l.sortedBy { if (it.provider == "gemini") 0 else 1 } else l }
-        for (c in sttCands) {
+        // 会話もふだんは Groq など（Gemini の無料枠を使い切らないように）。話し手は仕上げのあとに Gemini でまとめて聞き分ける
+        for (c in usable(Role.STT)) {
             status.value = "${c.model} で文字起こし中（${fmtClock(seg.startMs)}）"
             activity.value = "清書中（${c.model}）"
             try {
@@ -430,7 +429,7 @@ object Processor {
             Repo.updateSegment(s.id, g.index) {
                 // 送っている間に文字起こしがやり直されていたら使わない
                 if (it.raw != g.raw || it.edited != null) it
-                else if (ok) it.copy(formatted = out, formatModel = c.model, polished = polished)
+                else if (ok) it.copy(formatted = out, formatModel = c.model, polished = polished, speakerChecked = false)
                 else if (polished) it.copy(polished = true) // 仕上げで文が減った：前の文のまま（仕上げ済みとして、繰り返さない）
                 else {
                     // すぐの整形で文が減った：2回目までは次の機会にやり直し、それでもだめなら文字起こしのまま
@@ -452,7 +451,7 @@ object Processor {
     private suspend fun polishLoop() {
         while (true) {
             val worked = try {
-                polishStep() || summaryStep()
+                polishStep() || speakerStep() || summaryStep()
             } catch (e: Exception) {
                 polishStatus.value = "仕上げ: ${e.message?.take(120)}"
                 false
@@ -462,6 +461,89 @@ object Processor {
                 withTimeoutOrNull(30_000) { polishWakeCh.receive() }
             }
         }
+    }
+
+    /**
+     * 会話：仕上げが済んだ区間を1〜2分ずつまとめて Gemini に聞かせ、話し手を付け直す。
+     * 15秒ごとに聞かせるより回数が約8分の1で済む。Gemini が休み中なら何もしない（文章の AI が付けた話し手のまま。戻ったら続きから）。
+     */
+    private fun speakerStep(): Boolean {
+        val st = settings
+        if (!Net.online(app) || st.geminiKey.isBlank()) return false
+        fun ready(g: Segment) = !g.silent && g.rawEngine != "local" && g.rawEngine != "error" && g.edited == null &&
+            !g.speakerChecked && !g.formatted.isNullOrBlank() && (g.polished || !st.polishEnabled)
+        for (s in Repo.sessions.value) {
+            if (!s.isTalk) continue
+            val start = s.segments.indexOfFirst { ready(it) }
+            if (start < 0) continue
+            val batch = ArrayList<Segment>()
+            var ms = 0L
+            for (g in s.segments.drop(start)) {
+                if (g.silent || g.formatted.isNullOrBlank()) continue
+                if (!ready(g)) break
+                if (batch.size >= 8 || ms >= 110_000) break
+                batch.add(g)
+                ms += g.endMs - g.startMs
+            }
+            // 録音中は、1分たまるまで待つ（短い分を何度も送らない）
+            if (batch.isEmpty() || (s.recording && ms < 60_000)) continue
+            if ((failures["spk:${s.id}/${batch.first().index}"] ?: 0) >= 3) {
+                batch.forEach { g -> Repo.updateSegment(s.id, g.index) { it.copy(speakerChecked = true) } }
+                return true
+            }
+            val cands = Catalog.ranked(app, Role.STT).filter { it.provider == "gemini" && Cooldown.ok(it.key) }
+            if (cands.isEmpty()) {
+                polishStatus.value = "話し手の聞き分け：Gemini が休み中（文章から付けた話し手のまま。戻ったら続けます）"
+                return false
+            }
+            val texts = batch.map { it.formatted ?: "" }
+            val parts = org.json.JSONArray()
+            parts.put(org.json.JSONObject().put("text", Prompts.speakerUser(s, batch.first().index, texts)))
+            for ((k, g) in batch.withIndex()) {
+                val f = Repo.audioFile(s.id, g)
+                if (!f.exists()) continue
+                parts.put(org.json.JSONObject().put("text", "区間${k + 1}の音声："))
+                val aac = if (f.name.endsWith(".m4a")) runCatching { Audio.toAdts(f) }.getOrNull() else null
+                parts.put(org.json.JSONObject().put("inline_data", org.json.JSONObject()
+                    .put("mime_type", if (aac != null) "audio/aac" else "audio/wav")
+                    .put("data", android.util.Base64.encodeToString(aac ?: Audio.toWavBytes(f), android.util.Base64.NO_WRAP))))
+            }
+            for (c in cands) {
+                polishStatus.value = "${c.model} で話し手を聞き分け中（${fmtClock(batch.first().startMs)}〜）"
+                polishActivity.value = "話し手の聞き分け（${c.model}）"
+                try {
+                    val out = Gemini.generate(st.geminiKey, c.model, Prompts.SPEAKER_SYSTEM, parts, json = true, fast = true, timeoutMs = 120_000)
+                    Usage.add(c.key)
+                    val list = parseSegments(out) ?: throw IllegalStateException("結果を読めません")
+                    if (list.size != batch.size) throw IllegalStateException("区間の数が合いません（${list.size}/${batch.size}）")
+                    batch.forEachIndexed { i, g ->
+                        val neu = Talk.applyNames(fixNewlines(list[i]).trim(), s.speakerMap)
+                        // 文字そのものは変わっていないこと（話し手と改行だけ）
+                        val ok = Guard.keepsContent(texts[i], neu) && Guard.keepsContent(neu, texts[i])
+                        Repo.updateSegment(s.id, g.index) {
+                            if (it.formatted != texts[i] || it.edited != null) it
+                            else if (ok) it.copy(formatted = neu, speakerChecked = true)
+                            else it.copy(speakerChecked = true)
+                        }
+                    }
+                    polishStatus.value = ""
+                    return true
+                } catch (e: RateLimited) {
+                    Cooldown.set(c.key, e.waitMs, "${c.model}: ${e.message?.take(120)}")
+                } catch (e: Exception) {
+                    if (e is HttpError && e.code in listOf(400, 401, 403, 404, 413)) {
+                        Cooldown.set(c.key, 30 * 60_000L, "${c.model}: ${e.message?.take(120)}")
+                        continue
+                    }
+                    val k = "spk:${s.id}/${batch.first().index}"
+                    failures[k] = (failures[k] ?: 0) + 1
+                    polishStatus.value = "${c.model} 話し手: ${e.message?.take(100)}"
+                    return false
+                }
+            }
+            return false
+        }
+        return false
     }
 
     /**
@@ -683,6 +765,23 @@ ${corrections(s)}
 ${Talk.previous(s, seg.index, 300).let { if (it.isEmpty()) "" else "直前の内容（参考。出力には含めない）：\n$it\n" }}
 出力は書き起こした本文だけにしてください。
 """.trim()
+
+    /** 会話：音声を聞いて話し手を付け直す */
+    const val SPEAKER_SYSTEM = """あなたは日本語の会話の書き起こしで、話し手を聞き分ける係です。
+いくつかの区間の音声と、それぞれの区間の書き起こしを渡します。音声を聞いて、声で話し手を見分け、書き起こしの話し手を付け直してください。
+規則：
+1. 文字は変えないでください。直してよいのは、発言ごとの改行と、行の頭の話し手（「Ａ：」など）だけです。
+2. 同じ声の人には、すべての区間で同じ書き方を使ってください。直前の内容に出てくる人と同じ声なら、その書き方（名前が付いていれば名前）を使ってください。新しい人には、まだ使っていない文字（Ｃ、Ｄ…）を使ってください。
+3. 区間の始めが、前の区間の最後の発言の続きなら、その行は話し手を付けずに続けてください。
+4. 出力は JSON だけ：{"segments":["…","…"]}（入力と同じ数・同じ順）"""
+
+    fun speakerUser(s: Session, firstIndex: Int, texts: List<String>): String = buildString {
+        if (s.speakerMap.isNotEmpty()) append("付けてある名前：${s.speakerMap.values.distinct().joinToString("、")}\n\n")
+        Talk.previous(s, firstIndex, 400).let { if (it.isNotEmpty()) append("直前の内容（参考。出力には含めない）：\n$it\n\n") }
+        append("書き起こし（区間ごと）：\n")
+        append(JSONObject().put("segments", JSONArray(texts)).toString())
+        append("\n\nこのあとに、区間1から順に音声を付けます。")
+    }
 
     /** 会話の整形の決まった部分 */
     fun formatSystemTalk(glossary: String, compact: Boolean) = """

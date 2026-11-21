@@ -32,6 +32,8 @@ data class Segment(
     val highlights: List<String> = emptyList(),
     val silent: Boolean = false,
     val error: String? = null,
+    /** 会話：音声を聞いて話し手を付け直したか */
+    val speakerChecked: Boolean = false,
 )
 
 data class Mark(val timeMs: Long, val note: String)
@@ -207,6 +209,7 @@ object Repo {
                     g.rawModel?.let { put("rawModel", it) }
                     g.formatModel?.let { put("formatModel", it) }
                     put("polished", g.polished)
+                    put("speakerChecked", g.speakerChecked)
                     g.edited?.let { put("edited", it) }
                     if (g.highlights.isNotEmpty()) put("highlights", JSONArray(g.highlights))
                     put("silent", g.silent)
@@ -243,6 +246,7 @@ object Repo {
                     rawModel = g.optStr("rawModel"),
                     formatModel = g.optStr("formatModel"),
                     polished = g.optBoolean("polished"),
+                    speakerChecked = g.optBoolean("speakerChecked"),
                     edited = g.optStr("edited"),
                     highlights = g.optJSONArray("highlights")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList(),
                     silent = g.optBoolean("silent"),
