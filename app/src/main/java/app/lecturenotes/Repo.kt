@@ -94,8 +94,55 @@ object Repo {
     private val _sessions = MutableStateFlow<List<Session>>(emptyList())
     val sessions: StateFlow<List<Session>> = _sessions
 
+    /** ゴミ箱（files/trash/<id>/）。消した日時と一緒に。30日たったら本当に消す */
+    data class Trashed(val session: Session, val deletedAt: Long) {
+        val daysLeft: Int get() = (TRASH_DAYS - (System.currentTimeMillis() - deletedAt) / 86_400_000L).toInt().coerceAtLeast(0)
+    }
+    const val TRASH_DAYS = 30
+    private lateinit var trashRoot: File
+    private val _trash = MutableStateFlow<List<Trashed>>(emptyList())
+    val trash: StateFlow<List<Trashed>> = _trash
+
+    private fun loadTrash() {
+        val now = System.currentTimeMillis()
+        _trash.value = trashRoot.listFiles()?.mapNotNull { d ->
+            val at = runCatching { File(d, "deleted_at").readText().trim().toLong() }.getOrElse { d.lastModified() }
+            // 30日たったものは本当に消す
+            if (now - at > TRASH_DAYS * 86_400_000L) { d.deleteRecursively(); return@mapNotNull null }
+            val f = File(d, "session.json")
+            if (!f.exists()) null else runCatching { Trashed(fromJson(JSONObject(f.readText())), at) }.getOrNull()
+        }?.sortedByDescending { it.deletedAt } ?: emptyList()
+    }
+
+    /** ゴミ箱から戻す */
+    @Synchronized
+    fun restore(id: String) {
+        val from = File(trashRoot, id)
+        val to = dir(id)
+        if (!from.exists() || to.exists()) return
+        if (!from.renameTo(to)) return
+        File(to, "deleted_at").delete()
+        val s = runCatching { fromJson(JSONObject(File(to, "session.json").readText())) }.getOrNull()
+        if (s != null) _sessions.value = (_sessions.value + s.copy(recording = false)).sortedByDescending { it.startedAt }
+        _trash.value = _trash.value.filter { it.session.id != id }
+    }
+
+    /** ゴミ箱から本当に消す（null ならゴミ箱を空にする） */
+    @Synchronized
+    fun purge(id: String?) {
+        if (id == null) {
+            trashRoot.listFiles()?.forEach { it.deleteRecursively() }
+            _trash.value = emptyList()
+        } else {
+            File(trashRoot, id).deleteRecursively()
+            _trash.value = _trash.value.filter { it.session.id != id }
+        }
+    }
+
     fun init(context: Context) {
         root = File(context.filesDir, "sessions").apply { mkdirs() }
+        trashRoot = File(context.filesDir, "trash").apply { mkdirs() }
+        loadTrash()
         val list = root.listFiles()?.mapNotNull { dir ->
             val f = File(dir, "session.json")
             if (!f.exists()) null else runCatching { fromJson(JSONObject(f.readText())) }.getOrNull()
@@ -167,9 +214,19 @@ object Repo {
     }
 
     @Synchronized
+    /** 削除：ゴミ箱へ移す（30日間は戻せる） */
+    @Synchronized
     fun delete(id: String) {
-        dir(id).deleteRecursively()
+        if (Player.state.value.sessionId == id) Player.stop()
+        val s = get(id)
+        val to = File(trashRoot, id)
+        to.deleteRecursively()
+        val moved = dir(id).renameTo(to)
+        if (!moved) dir(id).deleteRecursively()
+        val now = System.currentTimeMillis()
+        if (moved) runCatching { File(to, "deleted_at").writeText(now.toString()) }
         _sessions.value = _sessions.value.filter { it.id != id }
+        if (moved && s != null) _trash.value = (listOf(Trashed(s, now)) + _trash.value.filter { it.session.id != id })
     }
 
     private fun save(s: Session) {

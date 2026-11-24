@@ -193,6 +193,8 @@ sealed interface Screen {
     data object Plan : Screen
     /** 音のテスト */
     data object SoundTestS : Screen
+    /** ゴミ箱 */
+    data object Trash : Screen
 }
 
 @Composable
@@ -225,7 +227,9 @@ fun AppRoot() {
                 onSettings = { screen = Screen.Config(Screen.Home) },
                 onPlan = { screen = Screen.Plan },
                 onSoundTest = { screen = Screen.SoundTestS },
+                onTrash = { screen = Screen.Trash },
             )
+            Screen.Trash -> TrashScreen(onBack = { screen = Screen.Home })
             Screen.Plan -> PlanScreen(onBack = { screen = Screen.Home })
             Screen.SoundTestS -> SoundTestScreen(onBack = { screen = Screen.Home })
             is Screen.Detail -> DetailScreen(
@@ -263,7 +267,8 @@ private fun Header(
 // ---------------- 一覧 ----------------
 
 @Composable
-fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit, onPlan: () -> Unit, onSoundTest: () -> Unit) {
+fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit, onPlan: () -> Unit, onSoundTest: () -> Unit, onTrash: () -> Unit = {}) {
+    val trash by Repo.trash.collectAsState()
     val context = LocalContext.current
     val sessions by Repo.sessions.collectAsState()
     val live by Live.state.collectAsState()
@@ -462,7 +467,7 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
                         if (confirmDelete == s.id) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
-                                    "🗑 削除する？（戻せません）",
+                                    "🗑 ゴミ箱へ移す？（${Repo.TRASH_DAYS}日間は戻せます）",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.error,
                                     modifier = Modifier.weight(1f),
@@ -479,6 +484,14 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
                     }
                 }
                 }
+                }
+            }
+            // いちばん下にゴミ箱（中身があるときだけ）
+            if (trash.isNotEmpty()) {
+                item(key = "trash") {
+                    TextButton(onClick = onTrash, modifier = Modifier.padding(vertical = 8.dp)) {
+                        Text("🗑 ゴミ箱（${trash.size}件）", color = MaterialTheme.colorScheme.outline)
+                    }
                 }
             }
             if (shown.isEmpty()) {
@@ -1032,8 +1045,8 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
     if (confirmDelete) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
-            title = { Text("「${s.title}」を削除しますか？") },
-            text = { Text("録音と文字がすべて消えます。元に戻せません。") },
+            title = { Text("「${s.shownTitle}」をゴミ箱へ移しますか？") },
+            text = { Text("${Repo.TRASH_DAYS}日間は一覧のいちばん下の「ゴミ箱」から戻せます。") },
             confirmButton = {
                 Button(
                     onClick = {
@@ -1042,7 +1055,7 @@ fun DetailScreen(id: String, openInfo: Boolean, initialQuery: String, onBack: ()
                         onBack()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                ) { Text("削除する") }
+                ) { Text("ゴミ箱へ") }
             },
             dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("やめる") } },
         )
@@ -2860,5 +2873,73 @@ private fun SpeakerNameBar(who: String, onDone: (String) -> Unit, onClose: () ->
                 cands.forEach { c -> AssistChip(onClick = { onDone(c) }, label = { Text(c) }) }
             }
         }
+    }
+}
+
+
+/** ゴミ箱：削除した記録。30日間は戻せる */
+@Composable
+private fun TrashScreen(onBack: () -> Unit) {
+    val trash by Repo.trash.collectAsState()
+    var confirm by remember { mutableStateOf<String?>(null) } // 消す記録の id、"*" はすべて
+    Column(Modifier.fillMaxSize()) {
+        Header("ゴミ箱", onBack) {
+            if (trash.isNotEmpty()) TextButton(onClick = { confirm = if (confirm == "*") null else "*" }) {
+                Text("すべて消す", color = MaterialTheme.colorScheme.error)
+            }
+        }
+        Text(
+            "削除した記録は、${Repo.TRASH_DAYS}日たつと自動で消えます。",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.outline,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+        )
+        if (confirm == "*") {
+            DeleteConfirmRow("ゴミ箱の ${trash.size} 件をすべて消す？（戻せません）", { confirm = null }) { confirm = null; Repo.purge(null) }
+        }
+        LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+            items(trash.size, key = { trash[it].session.id }) { i ->
+                val t = trash[i]
+                val s = t.session
+                Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                    Column(Modifier.padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 4.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(s.shownTitle, style = MaterialTheme.typography.titleMedium, maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                Text(
+                                    listOfNotNull(fmtDate(s.startedAt), fmtClock(s.durationMs), s.speaker.ifBlank { null }, "あと${t.daysLeft}日").joinToString("・"),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                            TextButton(onClick = { Repo.restore(s.id) }) { Text("↩ 戻す") }
+                            IconBtn(Icons.Default.Delete, "完全に消す", tint = MaterialTheme.colorScheme.outline) {
+                                confirm = if (confirm == s.id) null else s.id
+                            }
+                        }
+                        if (confirm == s.id) {
+                            DeleteConfirmRow("完全に消す？（戻せません）", { confirm = null }) { confirm = null; Repo.purge(s.id) }
+                        }
+                    }
+                }
+            }
+            if (trash.isEmpty()) {
+                item { Text("ゴミ箱は空です", color = MaterialTheme.colorScheme.outline, modifier = Modifier.padding(16.dp)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeleteConfirmRow(label: String, onCancel: () -> Unit, onOk: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp)) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error, modifier = Modifier.weight(1f))
+        IconBtn(Icons.Default.Close, "やめる") { onCancel() }
+        Spacer(Modifier.width(4.dp))
+        FilledIconButton(
+            onClick = onOk,
+            colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.error),
+            modifier = Modifier.size(40.dp),
+        ) { Icon(Icons.Default.Delete, contentDescription = "消す") }
     }
 }
