@@ -213,7 +213,6 @@ object Repo {
         update(id) { s -> s.copy(segments = s.segments.map { if (it.index == index) f(it) else it }) }
     }
 
-    @Synchronized
     /** 削除：ゴミ箱へ移す（30日間は戻せる） */
     @Synchronized
     fun delete(id: String) {
