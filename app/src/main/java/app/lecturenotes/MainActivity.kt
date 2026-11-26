@@ -293,7 +293,7 @@ fun HomeScreen(onOpen: (String, Boolean, String) -> Unit, onSettings: () -> Unit
     val ordered = shown.groupBy { fmtDay(it.startedAt) }.values.flatMap { l -> l.sortedBy { it.startedAt } }
 
     Column(Modifier.fillMaxSize()) {
-        Header("たっぴぃずノート", null) {
+        Header("たぺいノート", null) {
             IconBtn(Icons.Default.Search, "探す") {
                 homeSearch = !homeSearch
                 if (!homeSearch) homeQuery = ""
@@ -2451,7 +2451,7 @@ fun SettingsScreen(onBack: () -> Unit, onGlossary: () -> Unit) {
                     context.startActivity(Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                 }) { Text("電池の最適化の設定を開く") }
                 Text(
-                    "長時間の録音が止まらないよう、「たっぴぃずノート」を最適化しない（制限なし）にしておくと安心です。",
+                    "長時間の録音が止まらないよう、「たぺいノート」を最適化しない（制限なし）にしておくと安心です。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.outline,
                 )
