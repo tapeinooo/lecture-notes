@@ -1,4 +1,4 @@
-# たっぴぃず録音（lecture-notes）
+# たっぴぃずノート（lecture-notes）
 
 講演を録音しながら文字起こしし、AI で整えて記録する、自分専用の Android アプリ。
 
